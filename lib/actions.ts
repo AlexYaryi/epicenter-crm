@@ -1380,13 +1380,13 @@ const appUserSchema = z.object({
   telegram_username: z.string().optional()
 });
 
-export async function createAppUserAction(formData: FormData): Promise<void> {
+export async function createAppUserAction(formData: FormData): Promise<ActionResult> {
   const supabase = requireSupabase();
-  if (!supabase) return;
+  if (!supabase) return actionError("Supabase не настроен.");
   const user = await requireRole(["owner"]);
-  if (!user) return;
+  if (!user) return actionError("Только owner может создавать пользователей.");
 
-  const input = appUserSchema.parse({
+  const parsed = appUserSchema.safeParse({
     tenant_id: formData.get("tenant_id"),
     email: formData.get("email"),
     password: formData.get("password"),
@@ -1395,6 +1395,8 @@ export async function createAppUserAction(formData: FormData): Promise<void> {
     phone: formData.get("phone"),
     telegram_username: formData.get("telegram_username")
   });
+  if (!parsed.success) return actionError(parsed.error.issues[0]?.message ?? "Проверьте данные пользователя.");
+  const input = parsed.data;
 
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
     email: input.email,
@@ -1405,7 +1407,7 @@ export async function createAppUserAction(formData: FormData): Promise<void> {
 
   if (authError || !authData.user) {
     console.error(authError?.message ?? "Auth user was not created.");
-    return;
+    return actionError(authError?.message ?? "Пользователь в Auth не создан.");
   }
 
   const { error } = await supabase.from("app_users").insert({
@@ -1418,8 +1420,12 @@ export async function createAppUserAction(formData: FormData): Promise<void> {
     active: true
   });
 
-  if (error) console.error(error.message);
+  if (error) {
+    console.error(error.message);
+    return actionError(error.message);
+  }
   revalidatePath("/settings");
+  return actionOk(`Пользователь ${input.full_name} создан. Email: ${input.email}`);
 }
 
 const appUserUpdateSchema = z.object({
@@ -1428,17 +1434,19 @@ const appUserUpdateSchema = z.object({
   active: z.enum(["true", "false"])
 });
 
-export async function updateAppUserAction(formData: FormData): Promise<void> {
+export async function updateAppUserAction(formData: FormData): Promise<ActionResult> {
   const supabase = requireSupabase();
-  if (!supabase) return;
+  if (!supabase) return actionError("Supabase не настроен.");
   const user = await requireRole(["owner"]);
-  if (!user) return;
+  if (!user) return actionError("Только owner может изменять роли.");
 
-  const input = appUserUpdateSchema.parse({
+  const parsed = appUserUpdateSchema.safeParse({
     id: formData.get("id"),
     role: formData.get("role"),
     active: formData.get("active")
   });
+  if (!parsed.success) return actionError("Проверьте роль и статус.");
+  const input = parsed.data;
 
   const { error } = await supabase
     .from("app_users")
@@ -1446,8 +1454,12 @@ export async function updateAppUserAction(formData: FormData): Promise<void> {
     .eq("id", input.id)
     .eq("tenant_id", user.tenantId);
 
-  if (error) console.error(error.message);
+  if (error) {
+    console.error(error.message);
+    return actionError(error.message);
+  }
   revalidatePath("/settings");
+  return actionOk("Роль и статус обновлены.");
 }
 
 const contractSchema = z.object({
@@ -2034,4 +2046,158 @@ export async function sendLeadMessageAction(formData: FormData): Promise<ActionR
   revalidatePath(`/leads/${lead.id}`);
   if (lead.customer_id) revalidatePath(`/customers/${lead.customer_id}`);
   return actionOk("Сообщение отправлено и сохранено в истории лида.");
+}
+
+const customerUpdateSchema = z.object({
+  id: z.string().uuid(),
+  full_name: z.string().min(1),
+  full_name_passport: z.string().optional(),
+  phone: z.string().optional(),
+  whatsapp: z.string().optional(),
+  telegram_username: z.string().optional(),
+  email: z.string().email().optional().or(z.literal("")),
+  nationality: z.string().optional(),
+  language_pref: z.enum(["ru", "en"]).default("ru"),
+  source: z.string().default("whatsapp"),
+  source_detail: z.string().optional(),
+  passport_number: z.string().optional(),
+  passport_expires: z.string().optional(),
+  idp_number: z.string().optional(),
+  idp_expires: z.string().optional(),
+  notes_internal: z.string().optional()
+});
+
+export async function updateCustomerAction(formData: FormData): Promise<ActionResult> {
+  const supabase = requireSupabase();
+  if (!supabase) return actionError("Supabase не настроен.");
+  const user = await requireRole(["owner", "manager", "operator", "marketer"]);
+  if (!user) return actionError("Недостаточно прав для редактирования клиента.");
+
+  const parsed = customerUpdateSchema.safeParse({
+    id: formData.get("id"),
+    full_name: formData.get("full_name"),
+    full_name_passport: formData.get("full_name_passport"),
+    phone: formData.get("phone"),
+    whatsapp: formData.get("whatsapp"),
+    telegram_username: formData.get("telegram_username"),
+    email: formData.get("email"),
+    nationality: formData.get("nationality"),
+    language_pref: formData.get("language_pref") || "ru",
+    source: formData.get("source") || "whatsapp",
+    source_detail: formData.get("source_detail"),
+    passport_number: formData.get("passport_number"),
+    passport_expires: formData.get("passport_expires"),
+    idp_number: formData.get("idp_number"),
+    idp_expires: formData.get("idp_expires"),
+    notes_internal: formData.get("notes_internal")
+  });
+  if (!parsed.success) return actionError(parsed.error.issues[0]?.message ?? "Проверьте данные клиента.");
+  const input = parsed.data;
+
+  const hasValidIdp = Boolean(input.idp_number && input.idp_expires && new Date(input.idp_expires) > new Date());
+
+  const { error } = await supabase.from("customers").update({
+    full_name: input.full_name,
+    full_name_passport: input.full_name_passport || null,
+    phone: input.phone || null,
+    whatsapp: input.whatsapp || input.phone || null,
+    telegram_username: input.telegram_username || null,
+    email: input.email || null,
+    nationality: input.nationality || null,
+    language_pref: input.language_pref,
+    source: normalizeSourceForDb(input.source),
+    source_detail: input.source_detail || null,
+    passport_number: input.passport_number || null,
+    passport_expires: input.passport_expires || null,
+    idp_number: input.idp_number || null,
+    idp_expires: input.idp_expires || null,
+    has_valid_idp: hasValidIdp,
+    notes_internal: input.notes_internal || null
+  }).eq("id", input.id).eq("tenant_id", user.tenantId);
+
+  if (error) {
+    console.error(error.message);
+    return actionError(error.message);
+  }
+
+  revalidatePath("/customers");
+  revalidatePath(`/customers/${input.id}`);
+  revalidatePath("/");
+  return actionOk("Карточка клиента сохранена.");
+}
+
+const changePasswordSchema = z.object({
+  user_id: z.string().uuid(),
+  new_password: z.string().min(6)
+});
+
+export async function changeUserPasswordAction(formData: FormData): Promise<ActionResult> {
+  const supabase = requireSupabase();
+  if (!supabase) return actionError("Supabase не настроен.");
+  const currentUser = await requireRole(["owner"]);
+  if (!currentUser) return actionError("Только owner может менять пароли.");
+
+  const parsed = changePasswordSchema.safeParse({
+    user_id: formData.get("user_id"),
+    new_password: formData.get("new_password")
+  });
+  if (!parsed.success) return actionError("Пароль должен быть минимум 6 символов.");
+  const input = parsed.data;
+
+  const { data: appUser } = await supabase.from("app_users")
+    .select("auth_user_id, full_name").eq("id", input.user_id).eq("tenant_id", currentUser.tenantId).maybeSingle();
+  if (!appUser?.auth_user_id) return actionError("Пользователь не найден.");
+
+  const { error } = await supabase.auth.admin.updateUserById(appUser.auth_user_id, { password: input.new_password });
+  if (error) return actionError(error.message);
+
+  revalidatePath("/settings");
+  return actionOk(`Пароль для ${appUser.full_name} изменён.`);
+}
+
+const deleteUserSchema = z.object({
+  user_id: z.string().uuid(),
+  transfer_to_user_id: z.string().uuid().optional().or(z.literal(""))
+});
+
+export async function deleteUserWithTransferAction(formData: FormData): Promise<ActionResult> {
+  const supabase = requireSupabase();
+  if (!supabase) return actionError("Supabase не настроен.");
+  const currentUser = await requireRole(["owner"]);
+  if (!currentUser) return actionError("Только owner может удалять пользователей.");
+
+  const parsed = deleteUserSchema.safeParse({
+    user_id: formData.get("user_id"),
+    transfer_to_user_id: formData.get("transfer_to_user_id") || ""
+  });
+  if (!parsed.success) return actionError("Проверьте данные для удаления.");
+  const input = parsed.data;
+
+  if (input.user_id === currentUser.authUserId) return actionError("Нельзя удалить самого себя.");
+
+  const { data: appUser } = await supabase.from("app_users")
+    .select("auth_user_id, full_name").eq("id", input.user_id).eq("tenant_id", currentUser.tenantId).maybeSingle();
+  if (!appUser) return actionError("Пользователь не найден.");
+
+  const transferTargetId = input.transfer_to_user_id || null;
+
+  if (transferTargetId) {
+    const { data: targetUser } = await supabase.from("app_users")
+      .select("auth_user_id").eq("id", transferTargetId).eq("tenant_id", currentUser.tenantId).maybeSingle();
+    if (targetUser?.auth_user_id) {
+      await supabase.from("conversation_messages")
+        .update({ sender_user_id: targetUser.auth_user_id })
+        .eq("tenant_id", currentUser.tenantId)
+        .eq("sender_user_id", appUser.auth_user_id);
+    }
+  }
+
+  await supabase.from("app_users").delete().eq("id", input.user_id).eq("tenant_id", currentUser.tenantId);
+
+  if (appUser.auth_user_id) {
+    await supabase.auth.admin.deleteUser(appUser.auth_user_id);
+  }
+
+  revalidatePath("/settings");
+  return actionOk(`Пользователь ${appUser.full_name} удалён${transferTargetId ? " и данные переданы." : "."}`);
 }

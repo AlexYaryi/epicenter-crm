@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import { bookingStatusBadge, getProtectedCrmPage, money, SimpleModulePage, sourceLabel } from "@/app/components/CrmPages";
-import { createBookingAction, sendCustomerMessageAction } from "@/lib/actions";
+import { createBookingAction, sendCustomerMessageAction, updateCustomerAction } from "@/lib/actions";
 import { getCustomerMessages } from "@/lib/repository";
 import { CustomerConversation } from "@/app/components/CustomerConversation";
+import { CustomerEditForm } from "@/app/components/CustomerEditForm";
 import { BookingForm } from "@/app/components/BookingForm";
 import { MessageComposeForm } from "@/app/components/MessageComposeForm";
 
@@ -21,6 +22,7 @@ export default async function Page({ params }: PageParams) {
 
   const bookings = data.bookings.filter((booking) => booking.customer_id === customer.id || booking.customer_name === customer.full_name);
   const messages = await getCustomerMessages(customer.id, user.tenantId);
+  const canEdit = user.role === "owner" || user.role === "manager" || user.role === "operator" || user.role === "marketer";
 
   return (
     <SimpleModulePage title={customer.full_name} subtitle="" locale={locale} activePath="/customers">
@@ -49,6 +51,20 @@ export default async function Page({ params }: PageParams) {
           </div>
         </div>
       </section>
+
+      {canEdit ? (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>{locale === "en" ? "Edit customer" : "Редактировать клиента"}</h2>
+              <p className="sub">{locale === "en" ? "Update contacts, documents, IDP and source." : "Обновить контакты, документы, IDP и источник."}</p>
+            </div>
+          </div>
+          <div className="panel-body">
+            <CustomerEditForm action={updateCustomerAction} customer={customer} locale={locale} />
+          </div>
+        </section>
+      ) : null}
 
       <section className="panel">
         <div className="panel-head">
