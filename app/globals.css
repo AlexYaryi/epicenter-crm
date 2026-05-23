@@ -460,6 +460,7 @@ th {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 5;
+  white-space: pre-wrap;
 }
 
 .lead-note,

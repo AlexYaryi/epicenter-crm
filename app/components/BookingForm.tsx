@@ -4,7 +4,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { Locale } from "@/lib/i18n";
 import type { ActionResult } from "@/lib/actions";
-import type { Customer, Vehicle } from "@/lib/types";
+import type { Customer, Vehicle, Booking } from "@/lib/types";
 
 type BookingFormProps = {
   action: (formData: FormData) => ActionResult | Promise<ActionResult>;
@@ -18,6 +18,10 @@ type BookingFormProps = {
   defaultDailyRate?: number;
   defaultMonthlyRate?: number;
   defaultDeposit?: number;
+  defaultStartDate?: string;
+  defaultEndDate?: string;
+  defaultVehicleCategory?: string;
+  existingBookings?: Booking[];
   submitLabel: string;
 };
 
@@ -60,20 +64,51 @@ export function BookingForm({
   defaultDailyRate = 390,
   defaultMonthlyRate = 0,
   defaultDeposit = 5000,
+  defaultStartDate = "",
+  defaultEndDate = "",
+  defaultVehicleCategory = "",
+  existingBookings = [],
   submitLabel
 }: BookingFormProps) {
   const router = useRouter();
   const [rentalType, setRentalType] = useState<"short_term" | "long_term">("short_term");
-  const [dailyRate, setDailyRate] = useState(defaultDailyRate || 390);
-  const [monthlyRate, setMonthlyRate] = useState(defaultMonthlyRate || 0);
-  const [rentalAmount, setRentalAmount] = useState(defaultMonthlyRate || 0);
-  const [deposit, setDeposit] = useState(defaultDeposit || 0);
-  const [deliveryFee, setDeliveryFee] = useState(0);
-  const [extras, setExtras] = useState(0);
-  const [selectedVehicleId, setSelectedVehicleId] = useState(fixedVehicleId ?? vehicles[0]?.id ?? "");
+  const [startDate, setStartDate] = useState(defaultStartDate);
+  const [endDate, setEndDate] = useState(defaultEndDate);
+
+  const initialVehicle = useMemo(() => {
+    if (fixedVehicleId) return vehicles.find(v => v.id === fixedVehicleId);
+    if (defaultVehicleCategory) {
+      const matched = vehicles.find(v => v.category === defaultVehicleCategory);
+      if (matched) return matched;
+    }
+    return vehicles[0];
+  }, [fixedVehicleId, defaultVehicleCategory, vehicles]);
+
+  const [selectedVehicleId, setSelectedVehicleId] = useState(initialVehicle?.id ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [result, setResult] = useState<ActionResult | null>(null);
-  const selectedVehicle = vehicles.find((vehicle) => vehicle.id === selectedVehicleId);
+
+  const selectedVehicle = vehicles.find((vehicle) => vehicle.id === selectedVehicleId) || initialVehicle;
+
+  const [dailyRate, setDailyRate] = useState(() => {
+    const v = initialVehicle;
+    return v ? (v.daily_rate_long_term || v.daily_rate_short_term || defaultDailyRate) : defaultDailyRate;
+  });
+  const [monthlyRate, setMonthlyRate] = useState(() => {
+    const v = initialVehicle;
+    return v ? (v.monthly_rate || (v.daily_rate_long_term || v.daily_rate_short_term || defaultDailyRate) * 30) : defaultMonthlyRate;
+  });
+  const [rentalAmount, setRentalAmount] = useState(() => {
+    const v = initialVehicle;
+    return v ? (v.monthly_rate || (v.daily_rate_long_term || v.daily_rate_short_term || defaultDailyRate) * 30) : defaultMonthlyRate;
+  });
+  const [deposit, setDeposit] = useState(() => {
+    const v = initialVehicle;
+    return v ? (v.deposit_amount || defaultDeposit) : defaultDeposit;
+  });
+
+  const [deliveryFee, setDeliveryFee] = useState(0);
+  const [extras, setExtras] = useState(0);
 
   const calculatedDailyRate = dailyRate;
   const effectiveRentalAmount = rentalType === "long_term" ? monthlyRate : rentalAmount;
@@ -81,6 +116,37 @@ export function BookingForm({
     () => Math.max(0, Number(effectiveRentalAmount || 0) + Number(deposit || 0) + Number(deliveryFee || 0) + Number(extras || 0)),
     [effectiveRentalAmount, deposit, deliveryFee, extras]
   );
+
+  const isVehicleAvailable = useMemo(() => {
+    return (vehicleId: string, startStr: string, endStr: string) => {
+      if (!existingBookings || !existingBookings.length || !startStr || !endStr) return true;
+      const start = new Date(startStr);
+      const end = new Date(endStr);
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) return true;
+
+      // Check if there is any overlapping booking for this vehicle that is NOT cancelled or draft
+      const activeBookings = existingBookings.filter(
+        b => b.vehicle_id === vehicleId && b.status !== "cancelled" && b.status !== "draft"
+      );
+
+      for (const b of activeBookings) {
+        const bStart = new Date(b.start_date);
+        const bEnd = new Date(b.end_date);
+        if (!isNaN(bStart.getTime()) && !isNaN(bEnd.getTime())) {
+          // Overlap check
+          if (bStart <= end && bEnd >= start) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+  }, [existingBookings]);
+
+  const isSelectedVehicleAvailable = useMemo(() => {
+    if (!selectedVehicleId) return true;
+    return isVehicleAvailable(selectedVehicleId, startDate, endDate);
+  }, [selectedVehicleId, startDate, endDate, isVehicleAvailable]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -135,7 +201,7 @@ export function BookingForm({
       ) : null}
 
       {!fixedVehicleId ? (
-        <div className="field">
+        <div className="field wide">
           <label>{text(locale, "Автомобиль", "Vehicle")}</label>
           <select
             name="vehicle_id"
@@ -152,9 +218,15 @@ export function BookingForm({
               }
             }}
           >
-            {vehicles.map((vehicle) => (
-              <option key={vehicle.id} value={vehicle.id}>{vehicleOptionLabel(vehicle, locale)}</option>
-            ))}
+            {vehicles.map((vehicle) => {
+              const available = isVehicleAvailable(vehicle.id, startDate, endDate);
+              const label = `${vehicle.make} ${vehicle.model} · ${vehicle.license_plate} · ${available ? (locale === 'en' ? '🟢 Available' : '🟢 Свободен') : (locale === 'en' ? '🔴 Booked' : '🔴 Занят')}`;
+              return (
+                <option key={vehicle.id} value={vehicle.id}>
+                  {label}
+                </option>
+              );
+            })}
           </select>
           {selectedVehicle ? <span className="muted">{text(locale, "Выбрано:", "Selected:")} {vehicleOptionLabel(selectedVehicle, locale)}</span> : null}
         </div>
@@ -173,8 +245,25 @@ export function BookingForm({
         </select>
       </div>
 
-      <div className="field"><label>{text(locale, "Начало", "Start")}</label><input name="start_date" type="date" required /></div>
-      <div className="field"><label>{text(locale, "Конец", "End")}</label><input name="end_date" type="date" required /></div>
+      <div className="field">
+        <label>{text(locale, "Начало", "Start")}</label>
+        <input name="start_date" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} required />
+      </div>
+      <div className="field">
+        <label>{text(locale, "Конец", "End")}</label>
+        <input name="end_date" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} required />
+      </div>
+      
+      {!isSelectedVehicleAvailable ? (
+        <div className="form-result wide error" style={{ margin: "0.5rem 0", padding: "0.75rem", gridColumn: "span 2" }}>
+          ⚠️ {text(locale, "Внимание: этот автомобиль уже забронирован на выбранные даты!", "Warning: this vehicle is already booked for the selected dates!")}
+        </div>
+      ) : startDate && endDate ? (
+        <div className="form-result wide ok" style={{ margin: "0.5rem 0", padding: "0.75rem", gridColumn: "span 2" }}>
+          ✨ {text(locale, "Автомобиль свободен на выбранные даты.", "Vehicle is available for the selected dates.")}
+        </div>
+      ) : null}
+
       <div className="field"><label>{text(locale, "Метод выдачи", "Pickup method")}</label><select name="pickup_method"><option value="office">Office</option><option value="hotel_delivery">Hotel delivery</option><option value="airport_meet">Airport meet</option></select></div>
 
       {rentalType === "long_term" ? (

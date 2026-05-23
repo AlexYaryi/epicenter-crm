@@ -16,7 +16,7 @@ function requireSupabase() {
 }
 
 function formString(value: FormDataEntryValue | null) {
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
 const dbSourceValues = new Set([
@@ -153,6 +153,9 @@ export async function createCustomerAction(formData: FormData): Promise<ActionRe
 
   if (error) {
     console.error(error.message);
+    if (error.code === "23505") {
+      return actionError("Клиент с таким номером телефона уже зарегистрирован в системе.");
+    }
     return actionError(error.message);
   }
 
@@ -202,6 +205,9 @@ export async function createCustomerFromLeadAction(formData: FormData): Promise<
 
   if (customerError || !customer) {
     console.error(customerError?.message ?? "Customer was not created.");
+    if (customerError?.code === "23505") {
+      return actionError("Клиент с таким номером телефона уже зарегистрирован в системе.");
+    }
     return actionError(customerError?.message ?? "Клиент не создан.");
   }
 

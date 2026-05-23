@@ -18,7 +18,9 @@ function t(locale: Locale, ru: string, en: string) {
 
 const SOURCES = [
   { value: "whatsapp", label: "WhatsApp" },
-  { value: "telegram_chat", label: "Telegram" },
+  { value: "telegram_chat", label: "Telegram Chat" },
+  { value: "telegram_channel", label: "Telegram Channel" },
+  { value: "groupswatcher", label: "Groups Watcher" },
   { value: "instagram", label: "Instagram" },
   { value: "facebook", label: "Facebook" },
   { value: "google_ads", label: "Google Ads" },

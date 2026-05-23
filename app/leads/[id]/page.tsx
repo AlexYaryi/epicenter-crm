@@ -9,6 +9,76 @@ import { createBookingAction, createCustomerFromLeadAction, sendCustomerMessageA
 import { leadStageLabel } from "@/lib/lead-stages";
 import { getCustomerMessages, getLeadMessages } from "@/lib/repository";
 
+function extractDatesFromText(text: string): { startDate?: string; endDate?: string } {
+  if (!text) return {};
+  
+  // 1. Look for YYYY-MM-DD patterns
+  const yyyymmddRegex = /(\d{4})[-/](\d{1,2})[-/](\d{1,2})/g;
+  const matches = [...text.matchAll(yyyymmddRegex)];
+  if (matches.length >= 2) {
+    return {
+      startDate: `${matches[0][1]}-${matches[0][2].padStart(2, '0')}-${matches[0][3].padStart(2, '0')}`,
+      endDate: `${matches[1][1]}-${matches[1][2].padStart(2, '0')}-${matches[1][3].padStart(2, '0')}`
+    };
+  }
+
+  // 2. Look for DD.MM.YYYY or DD.MM.YY or DD.MM patterns
+  const ddmmRegex = /(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/g;
+  const ddmmMatches = [...text.matchAll(ddmmRegex)];
+  if (ddmmMatches.length >= 2) {
+    const currentYear = new Date().getFullYear();
+    const parseMatch = (m: RegExpMatchArray) => {
+      const day = m[1].padStart(2, '0');
+      const month = m[2].padStart(2, '0');
+      let year = String(currentYear);
+      if (m[3]) {
+        year = m[3].length === 2 ? `20${m[3]}` : m[3];
+      }
+      return `${year}-${month}-${day}`;
+    };
+    return {
+      startDate: parseMatch(ddmmMatches[0]),
+      endDate: parseMatch(ddmmMatches[1])
+    };
+  }
+
+  // 3. Look for Russian month keywords: e.g., "с 10 мая по 25 мая"
+  const ruMonths = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+  const ruMonthsFull = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+  const ruMonthRegex = /(\d{1,2})\s*([а-яёA-Za-z]+)/gi;
+  const ruMatches = [...text.matchAll(ruMonthRegex)];
+  const resolvedDates: string[] = [];
+  const currentYear = new Date().getFullYear();
+  for (const m of ruMatches) {
+    const day = m[1].padStart(2, '0');
+    const monthWord = m[2].toLowerCase();
+    let monthIdx = -1;
+    for (let i = 0; i < 12; i++) {
+      if (monthWord.startsWith(ruMonths[i]) || monthWord.startsWith(ruMonthsFull[i].slice(0, 3))) {
+        monthIdx = i;
+        break;
+      }
+    }
+    if (monthIdx !== -1) {
+      const month = String(monthIdx + 1).padStart(2, '0');
+      resolvedDates.push(`${currentYear}-${month}-${day}`);
+    }
+  }
+
+  if (resolvedDates.length >= 2) {
+    return {
+      startDate: resolvedDates[0],
+      endDate: resolvedDates[1]
+    };
+  } else if (resolvedDates.length === 1) {
+    return {
+      startDate: resolvedDates[0]
+    };
+  }
+
+  return {};
+}
+
 type PageParams = {
   params: Promise<{ id: string }>;
 };
@@ -21,6 +91,8 @@ export default async function Page({ params }: PageParams) {
   if (!lead) {
     notFound();
   }
+
+  const parsedDates = extractDatesFromText(lead.note);
 
   const normalizeDigits = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "");
   const leadDigits = normalizeDigits(lead.phone);
@@ -248,6 +320,10 @@ export default async function Page({ params }: PageParams) {
               defaultDailyRate={390}
               defaultMonthlyRate={11700}
               defaultDeposit={5000}
+              defaultStartDate={parsedDates.startDate}
+              defaultEndDate={parsedDates.endDate}
+              defaultVehicleCategory={lead.category}
+              existingBookings={data.bookings}
               submitLabel={locale === "en" ? "Create booking from lead" : "Создать бронь из лида"}
             />
           </div>
