@@ -60,7 +60,7 @@ export default async function Page() {
                 <th>{t("Пользователь", "User")}</th>
                 <th>{t("Роль", "Role")}</th>
                 <th>{t("Статус", "Status")}</th>
-                <th>{t("Редактировать пользователя", "Edit user")}</th>
+                {isOwner ? <th>{t("Редактировать пользователя", "Edit user")}</th> : null}
                 {isOwner ? <th>{t("Пароль", "Password")}</th> : null}
                 {isOwner ? <th>{t("Удалить", "Delete")}</th> : null}
               </tr>
@@ -71,31 +71,54 @@ export default async function Page() {
                   <td>
                     <strong>{item.full_name}</strong>
                     <br />
-                    <span className="muted">{item.phone ?? ""} {item.telegram_username ?? ""}</span>
+                    <span className="muted">Email: {item.email ?? "-"}</span>
+                    <br />
+                    <span className="muted">Tel/WA: {item.phone ?? "-"}</span>
+                    <br />
+                    <span className="muted">TG: {item.telegram_username ?? "-"}</span>
                   </td>
                   <td>{item.role}</td>
                   <td><span className={item.active ? "badge ok" : "badge danger"}>{item.active ? "active" : "disabled"}</span></td>
-                  <td>
-                    <ActionFeedbackForm action={updateAppUserAction} className="filters" locale={locale} savingText={t("Сохраняю...", "Saving...")} fallbackError={t("Ошибка", "Error")}>
-                      <input type="hidden" name="id" value={item.id} />
-                      <input name="full_name" defaultValue={item.full_name} placeholder={t("Имя", "Name")} required style={{ width: "140px" }} />
-                      <input name="phone" defaultValue={item.phone ?? ""} placeholder={t("Телефон", "Phone")} style={{ width: "120px" }} />
-                      <input name="telegram_username" defaultValue={item.telegram_username ?? ""} placeholder="Telegram" style={{ width: "110px" }} />
-                      <select name="role" defaultValue={item.role}>
-                        <option value="owner">owner</option>
-                        <option value="manager">manager</option>
-                        <option value="operator">operator</option>
-                        <option value="accountant">accountant</option>
-                        <option value="marketer">marketer</option>
-                        <option value="partner_view">partner_view</option>
-                      </select>
-                      <select name="active" defaultValue={String(item.active)}>
-                        <option value="true">active</option>
-                        <option value="false">disabled</option>
-                      </select>
-                      <button className="button">{t("Сохранить", "Save")}</button>
-                    </ActionFeedbackForm>
-                  </td>
+                  {isOwner ? (
+                    <td>
+                      <ActionFeedbackForm action={updateAppUserAction} className="user-edit-form" locale={locale} savingText={t("Сохраняю...", "Saving...")} fallbackError={t("Ошибка", "Error")}>
+                        <input type="hidden" name="id" value={item.id} />
+                        <div className="edit-field">
+                          <label>{t("Имя", "Name")}</label>
+                          <input name="full_name" defaultValue={item.full_name} required style={{ width: "160px" }} />
+                        </div>
+                        <div className="edit-field">
+                          <label>{t("Телефон", "Phone")}</label>
+                          <input name="phone" defaultValue={item.phone ?? ""} style={{ width: "140px" }} />
+                        </div>
+                        <div className="edit-field">
+                          <label>Telegram</label>
+                          <input name="telegram_username" defaultValue={item.telegram_username ?? ""} style={{ width: "130px" }} />
+                        </div>
+                        <div className="edit-field">
+                          <label>{t("Роль", "Role")}</label>
+                          <select name="role" defaultValue={item.role}>
+                            <option value="owner">owner</option>
+                            <option value="manager">manager</option>
+                            <option value="operator">operator</option>
+                            <option value="accountant">accountant</option>
+                            <option value="marketer">marketer</option>
+                            <option value="partner_view">partner_view</option>
+                          </select>
+                        </div>
+                        <div className="edit-field">
+                          <label>{t("Статус", "Status")}</label>
+                          <select name="active" defaultValue={String(item.active)}>
+                            <option value="true">active</option>
+                            <option value="false">disabled</option>
+                          </select>
+                        </div>
+                        <div className="edit-field">
+                          <button className="button" style={{ marginTop: "16px" }}>{t("Сохранить", "Save")}</button>
+                        </div>
+                      </ActionFeedbackForm>
+                    </td>
+                  ) : null}
                   {isOwner ? (
                     <td>
                       <ActionFeedbackForm action={changeUserPasswordAction} className="filters" locale={locale} savingText={t("Меняю пароль...", "Changing password...")} fallbackError={t("Ошибка смены пароля", "Password change error")}>

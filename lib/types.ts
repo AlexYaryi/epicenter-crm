@@ -188,6 +188,7 @@ export type AppUser = {
   telegram_username: string | null;
   active: boolean;
   created_at: string;
+  email?: string | null;
 };
 
 export type BookingDetail = {

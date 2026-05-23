@@ -325,6 +325,17 @@ export async function getAppUsers(tenantId: string): Promise<AppUser[]> {
     return [];
   }
 
+  try {
+    const { data: authData } = await supabase.auth.admin.listUsers();
+    const emailMap = new Map(authData?.users?.map((u) => [u.id, u.email]) ?? []);
+    return data.map((item) => ({
+      ...item,
+      email: item.auth_user_id ? emailMap.get(item.auth_user_id) ?? null : null
+    })) as AppUser[];
+  } catch (err) {
+    console.error("Failed to list auth users:", err);
+  }
+
   return data as AppUser[];
 }
 
