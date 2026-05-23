@@ -60,7 +60,7 @@ export default async function Page() {
                 <th>{t("Пользователь", "User")}</th>
                 <th>{t("Роль", "Role")}</th>
                 <th>{t("Статус", "Status")}</th>
-                <th>{t("Изменить роль / статус", "Change role / status")}</th>
+                <th>{t("Редактировать пользователя", "Edit user")}</th>
                 {isOwner ? <th>{t("Пароль", "Password")}</th> : null}
                 {isOwner ? <th>{t("Удалить", "Delete")}</th> : null}
               </tr>
@@ -78,6 +78,9 @@ export default async function Page() {
                   <td>
                     <ActionFeedbackForm action={updateAppUserAction} className="filters" locale={locale} savingText={t("Сохраняю...", "Saving...")} fallbackError={t("Ошибка", "Error")}>
                       <input type="hidden" name="id" value={item.id} />
+                      <input name="full_name" defaultValue={item.full_name} placeholder={t("Имя", "Name")} required style={{ width: "140px" }} />
+                      <input name="phone" defaultValue={item.phone ?? ""} placeholder={t("Телефон", "Phone")} style={{ width: "120px" }} />
+                      <input name="telegram_username" defaultValue={item.telegram_username ?? ""} placeholder="Telegram" style={{ width: "110px" }} />
                       <select name="role" defaultValue={item.role}>
                         <option value="owner">owner</option>
                         <option value="manager">manager</option>

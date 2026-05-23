@@ -1436,6 +1436,9 @@ export async function createAppUserAction(formData: FormData): Promise<ActionRes
 
 const appUserUpdateSchema = z.object({
   id: z.string().uuid(),
+  full_name: z.string().min(1),
+  phone: z.string().optional(),
+  telegram_username: z.string().optional(),
   role: z.enum(["owner", "manager", "operator", "accountant", "marketer", "partner_view"]),
   active: z.enum(["true", "false"])
 });
@@ -1448,15 +1451,24 @@ export async function updateAppUserAction(formData: FormData): Promise<ActionRes
 
   const parsed = appUserUpdateSchema.safeParse({
     id: formData.get("id"),
+    full_name: formString(formData.get("full_name")),
+    phone: formString(formData.get("phone")),
+    telegram_username: formString(formData.get("telegram_username")),
     role: formData.get("role"),
     active: formData.get("active")
   });
-  if (!parsed.success) return actionError("Проверьте роль и статус.");
+  if (!parsed.success) return actionError(parsed.error.issues[0]?.message ?? "Проверьте данные пользователя.");
   const input = parsed.data;
 
   const { error } = await supabase
     .from("app_users")
-    .update({ role: input.role, active: input.active === "true" })
+    .update({
+      full_name: input.full_name,
+      phone: input.phone || null,
+      telegram_username: input.telegram_username || null,
+      role: input.role,
+      active: input.active === "true"
+    })
     .eq("id", input.id)
     .eq("tenant_id", user.tenantId);
 
@@ -1465,7 +1477,7 @@ export async function updateAppUserAction(formData: FormData): Promise<ActionRes
     return actionError(error.message);
   }
   revalidatePath("/settings");
-  return actionOk("Роль и статус обновлены.");
+  return actionOk("Данные пользователя обновлены.");
 }
 
 const contractSchema = z.object({
