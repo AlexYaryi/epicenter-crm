@@ -242,6 +242,7 @@ export async function getDashboardData(): Promise<DashboardData> {
         telegram_username: lead.anonymous_data?.telegram_username ?? lead.anonymous_data?.telegram ?? null,
         contact_handle: lead.anonymous_data?.contact ?? lead.anonymous_data?.contact_handle ?? null,
         channel: lead.source,
+        source_detail: lead.source_detail ?? lead.anonymous_data?.source_detail ?? null,
         stage: lead.status,
         score: lead.score ?? 0,
         first_response_minutes: lead.first_response_time_minutes ?? 0,
@@ -255,6 +256,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     bookings: bookingsResult.data.map((booking) => ({
       id: booking.id,
       booking_number: booking.booking_number,
+      lead_id: booking.lead_id ?? null,
       customer_id: booking.customer_id,
       customer_name: customersById.get(booking.customer_id)?.full_name ?? "Клиент не найден",
       vehicle_id: booking.vehicle_id,
@@ -544,6 +546,7 @@ export async function getVehicleBookings(vehicleId: string, tenantId: string): P
   return (bookings ?? []).map((booking) => ({
     id: booking.id,
     booking_number: booking.booking_number,
+    lead_id: booking.lead_id ?? null,
     customer_id: booking.customer_id,
     customer_name: customersById.get(booking.customer_id)?.full_name ?? "Клиент не найден",
     vehicle_id: booking.vehicle_id,

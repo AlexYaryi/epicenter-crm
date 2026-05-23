@@ -89,6 +89,7 @@ export type Lead = {
   telegram_username: string | null;
   contact_handle: string | null;
   channel: string;
+  source_detail?: string | null;
   stage: LeadStage;
   score: number;
   first_response_minutes: number;
@@ -104,6 +105,7 @@ export type BookingStatus = "draft" | "confirmed" | "paid_deposit" | "handed_ove
 export type Booking = {
   id: string;
   booking_number: string;
+  lead_id?: string | null;
   customer_id?: string;
   customer_name: string;
   vehicle_id?: string;

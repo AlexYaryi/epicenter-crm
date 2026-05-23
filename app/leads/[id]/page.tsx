@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { getProtectedCrmPage, PageFrame, sourceLabel, statusBadge } from "@/app/components/CrmPages";
+import { bookingStatusBadge, getProtectedCrmPage, money, PageFrame, sourceLabel, statusBadge } from "@/app/components/CrmPages";
 import { BookingForm } from "@/app/components/BookingForm";
 import { CustomerConversation } from "@/app/components/CustomerConversation";
 import { LeadCustomerLinkForm } from "@/app/components/LeadCustomerLinkForm";
@@ -39,6 +39,11 @@ export default async function Page({ params }: PageParams) {
   const leadContact = lead.phone || lead.telegram_username || lead.contact_handle || customer?.whatsapp || customer?.phone || customer?.telegram_username || "";
   const leadUsesTelegram = lead.channel.startsWith("telegram") || Boolean(lead.telegram_username);
   const leadUsesWhatsApp = lead.channel === "whatsapp" || Boolean(lead.phone) || (!leadUsesTelegram && Boolean(lead.contact_handle));
+  const leadBookings = data.bookings.filter((booking) => booking.lead_id === lead.id || (customer ? booking.customer_id === customer.id : false));
+  const canBook = Boolean(customer);
+  const reminderText = lead.reminder_at
+    ? new Intl.DateTimeFormat(locale === "en" ? "en-US" : "ru-RU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(lead.reminder_at))
+    : locale === "en" ? "No reminder" : "Нет напоминания";
 
   return (
     <PageFrame
@@ -61,10 +66,22 @@ export default async function Page({ params }: PageParams) {
           <div className="metric-label">Score</div>
           <div className="metric-value">{lead.score}</div>
         </div>
+        <div className="card">
+          <div className="metric-label">{locale === "en" ? "Next reminder" : "Следующее напоминание"}</div>
+          <div className="lead-kpi-text">{reminderText}</div>
+        </div>
+        <div className="card">
+          <div className="metric-label">{locale === "en" ? "Messages" : "Сообщения"}</div>
+          <div className="metric-value">{messages.length}</div>
+        </div>
+        <div className="card">
+          <div className="metric-label">{locale === "en" ? "Bookings" : "Брони"}</div>
+          <div className="metric-value">{leadBookings.length}</div>
+        </div>
       </section>
 
       <section className="grid-2">
-        <div className="panel">
+        <div className="panel" id="lead-request">
           <div className="panel-head">
             <div>
               <h2>{locale === "en" ? "Client request" : "Запрос клиента"}</h2>
@@ -85,6 +102,10 @@ export default async function Page({ params }: PageParams) {
               <span>{leadContact || "-"}</span>
             </div>
             <div className="task">
+              <strong>{locale === "en" ? "Source detail" : "Источник подробнее"}</strong>
+              <span className="lead-detail-text">{lead.source_detail || "-"}</span>
+            </div>
+            <div className="task">
               <strong>{locale === "en" ? "Request text" : "Текст запроса"}</strong>
               <span className="lead-detail-text">{lead.note || "-"}</span>
             </div>
@@ -99,7 +120,7 @@ export default async function Page({ params }: PageParams) {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel" id="lead-progress">
           <div className="panel-head">
             <div>
               <h2>{locale === "en" ? "Move through pipeline" : "Вести по воронке"}</h2>
@@ -112,8 +133,30 @@ export default async function Page({ params }: PageParams) {
         </div>
       </section>
 
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>{locale === "en" ? "Sales workspace" : "Рабочее место по лиду"}</h2>
+            <p className="sub">
+              {locale === "en"
+                ? "The operator can process the lead end to end without leaving this card."
+                : "Оператор может обработать лид полностью, не выходя из этой карточки."}
+            </p>
+          </div>
+        </div>
+        <div className="panel-body lead-workspace">
+          <a className="lead-workspace-step" href="#lead-conversation"><strong>1</strong><span>{locale === "en" ? "Read conversation" : "Прочитать переписку"}</span></a>
+          <a className="lead-workspace-step" href="#lead-reply"><strong>2</strong><span>{locale === "en" ? "Reply" : "Ответить"}</span></a>
+          <a className="lead-workspace-step" href="#lead-progress"><strong>3</strong><span>{locale === "en" ? "Set next step" : "Поставить следующий шаг"}</span></a>
+          <a className={canBook ? "lead-workspace-step" : "lead-workspace-step disabled"} href={canBook ? "#lead-booking" : "#lead-customer"}>
+            <strong>4</strong>
+            <span>{canBook ? (locale === "en" ? "Create booking" : "Создать бронь") : (locale === "en" ? "Create customer first" : "Сначала создать клиента")}</span>
+          </a>
+        </div>
+      </section>
+
       {!customer ? (
-        <section className="panel">
+        <section className="panel" id="lead-customer">
           <div className="panel-head">
             <div>
               <h2>{locale === "en" ? "Create customer from this lead" : "Создать клиента из лида"}</h2>
@@ -135,7 +178,7 @@ export default async function Page({ params }: PageParams) {
         </section>
       ) : null}
 
-      <section className="panel">
+      <section className="panel" id="lead-conversation">
         <div className="panel-head">
           <div>
             <h2>{locale === "en" ? "Conversation" : "Переписка"}</h2>
@@ -153,7 +196,7 @@ export default async function Page({ params }: PageParams) {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" id="lead-reply">
         <div className="panel-head">
           <div>
             <h2>{locale === "en" ? "Reply to lead" : "Ответить лиду"}</h2>
@@ -186,7 +229,7 @@ export default async function Page({ params }: PageParams) {
       </section>
 
       {customer ? (
-        <section className="panel">
+        <section className="panel" id="lead-booking">
           <div className="panel-head">
             <div>
               <h2>{locale === "en" ? "Reserve or rent a vehicle" : "Забронировать или сдать авто"}</h2>
@@ -210,6 +253,45 @@ export default async function Page({ params }: PageParams) {
           </div>
         </section>
       ) : null}
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>{locale === "en" ? "Bookings from this lead" : "Брони из этого лида"}</h2>
+            <p className="sub">
+              {locale === "en"
+                ? "Linked reservations and active rentals are visible here after saving."
+                : "Связанные брони и текущие аренды видны здесь сразу после сохранения."}
+            </p>
+          </div>
+          <span className="badge info">{leadBookings.length}</span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{locale === "en" ? "Booking" : "Бронь"}</th>
+                <th>{locale === "en" ? "Vehicle" : "Автомобиль"}</th>
+                <th>{locale === "en" ? "Dates" : "Даты"}</th>
+                <th>{locale === "en" ? "Status" : "Статус"}</th>
+                <th>{locale === "en" ? "Total" : "Сумма"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leadBookings.map((booking) => (
+                <tr key={booking.id}>
+                  <td><a href={`/bookings/${booking.id}`}>{booking.booking_number}</a></td>
+                  <td>{booking.vehicle_id ? <a href={`/fleet/${booking.vehicle_id}`}>{booking.vehicle}</a> : booking.vehicle}</td>
+                  <td>{booking.start_date} - {booking.end_date}</td>
+                  <td>{bookingStatusBadge(booking.status, locale)}</td>
+                  <td>{money(booking.grand_total)}</td>
+                </tr>
+              ))}
+              {leadBookings.length === 0 ? <tr><td colSpan={5}>{locale === "en" ? "No bookings yet" : "Броней пока нет"}</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </PageFrame>
   );
 }

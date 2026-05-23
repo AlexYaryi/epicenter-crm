@@ -579,6 +579,64 @@ th {
   text-decoration: underline;
 }
 
+.readonly-box {
+  min-height: 52px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 14px 16px;
+  font-weight: 900;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.lead-kpi-text {
+  margin-top: 8px;
+  font-size: 18px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.lead-workspace {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.lead-workspace-step {
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 72px;
+  padding: 12px;
+  border: 1px solid var(--aqua-border);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.lead-workspace-step strong {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--sun);
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.lead-workspace-step span {
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.lead-workspace-step.disabled {
+  opacity: 0.7;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -1600,6 +1658,7 @@ th {
   .grid-4,
   .form-grid,
   .field-pair,
+  .lead-workspace,
   .media-grid {
     grid-template-columns: 1fr;
   }
