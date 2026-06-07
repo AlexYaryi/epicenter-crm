@@ -125,6 +125,25 @@ export function bookingStatusBadge(status: string, locale: Locale) {
   return <span className={`badge ${cls}`}>{bookingStatusLabel(status, locale)}</span>;
 }
 
+export function rentalStatusLabel(status: string, locale: Locale) {
+  const labels: Record<string, { ru: string; en: string }> = {
+    not_started: { ru: "ожидает выдачи", en: "awaiting handover" },
+    handed_over: { ru: "выдана оператором", en: "handed over" },
+    active: { ru: "в аренде", en: "active rental" },
+    returning: { ru: "возврат", en: "returning" },
+    returned: { ru: "возвращена", en: "returned" }
+  };
+  const item = labels[status];
+  return item ? tx(locale, item.ru, item.en) : status;
+}
+
+export function rentalStatusBadge(status: string, locale: Locale) {
+  const ok = ["handed_over", "active", "returned"];
+  const warn = ["returning"];
+  const cls = ok.includes(status) ? "ok" : warn.includes(status) ? "warn" : "info";
+  return <span className={`badge ${cls}`}>{rentalStatusLabel(status, locale)}</span>;
+}
+
 function vehicleStatusLabel(status: string, locale: Locale) {
   const labels: Record<string, { ru: string; en: string }> = {
     available: { ru: "свободно", en: "available" },
@@ -489,7 +508,7 @@ export function DashboardPage({ user, data, locale }: PageProps) {
   );
 }
 
-export function FleetPage({ user, data, locale, selectedCategory = "all" }: PageProps & { selectedCategory?: "all" | VehicleCategory | "weak" }) {
+export function FleetPage({ user, data, locale, selectedCategory = "all" }: PageProps & { selectedCategory?: "all" | VehicleCategory | "weak" | "rented" }) {
   const canManageFleet = user.role === "owner" || user.role === "manager" || user.role === "marketer";
   const canSeeStrategic = user.role === "owner" || user.role === "accountant";
   const categories: ["all" | VehicleCategory, string][] = [
@@ -505,7 +524,9 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
       ? data.vehicles
       : selectedCategory === "weak"
         ? data.vehicles.filter((vehicle) => vehicle.status_financial === "UNDERPERFORMING")
-        : data.vehicles.filter((vehicle) => vehicle.category === selectedCategory);
+        : selectedCategory === "rented"
+          ? data.vehicles.filter((vehicle) => ["in_use", "handed_over", "active", "returning"].includes(vehicle.status))
+          : data.vehicles.filter((vehicle) => vehicle.category === selectedCategory);
 
   return (
     <PageFrame title={tr(locale, "fleetTitle")} subtitle="" locale={locale} activePath="/fleet" action={<a className="primary" href="/api/vehicles">API vehicles</a>}>
@@ -523,6 +544,9 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
               const href = key === "all" ? "/fleet" : `/fleet?category=${key}`;
               return <a className={`chip ${selectedCategory === key ? "active" : ""}`} href={href} key={key}>{label}<b>{count}</b></a>;
             })}
+            <a className={`chip ${selectedCategory === "rented" ? "active" : ""}`} href="/fleet?category=rented">
+              {tx(locale, "В аренде", "Rented")}<b>{data.vehicles.filter(v => ["in_use", "handed_over", "active", "returning"].includes(v.status)).length}</b>
+            </a>
             <a className={`chip ${selectedCategory === "weak" ? "active" : ""}`} href="/fleet?category=weak">
               {tr(locale, "weakAssets")}<b>{data.vehicles.filter((vehicle) => vehicle.status_financial === "UNDERPERFORMING").length}</b>
             </a>
@@ -681,8 +705,108 @@ export function LeadsPage({ user, data, locale }: PageProps) {
 }
 
 export function BookingsPage({ user, data, locale }: PageProps) {
+  // Calculate Phuket local today and tomorrow strings
+  const getLocalDateStr = (offsetDays = 0) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offsetDays);
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+  };
+  
+  const todayStr = getLocalDateStr(0);
+  const tomorrowStr = getLocalDateStr(1);
+
+  const bookingsToday = data.bookings.filter(b => {
+    if (!b.start_date || b.start_date.slice(0, 10) !== todayStr) return false;
+    if (!["confirmed", "paid_deposit", "draft"].includes(b.status)) return false;
+    const vehicle = data.vehicles.find(v => v.id === b.vehicle_id);
+    if (vehicle && vehicle.status === "in_use") return false;
+    return true;
+  });
+  const bookingsTomorrow = data.bookings.filter(b => {
+    if (!b.start_date || b.start_date.slice(0, 10) !== tomorrowStr) return false;
+    if (!["confirmed", "paid_deposit", "draft"].includes(b.status)) return false;
+    const vehicle = data.vehicles.find(v => v.id === b.vehicle_id);
+    if (vehicle && vehicle.status === "in_use") return false;
+    return true;
+  });
+
   return (
     <PageFrame title={tr(locale, "bookingsTitle")} subtitle={tr(locale, "bookingsSubtitle")} locale={locale} activePath="/bookings">
+      {/* Dashboard Section */}
+      <div className="dashboard-delivery-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
+        {/* Today */}
+        <section className="panel" style={{ borderLeft: "4px solid #10b981", margin: 0 }}>
+          <div className="panel-head" style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--line, #e2e8f0)", background: "rgba(16, 185, 129, 0.05)" }}>
+            <h3 style={{ margin: 0, fontSize: "1rem", color: "#10b981", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span>🟢</span> {locale === "en" ? "Deliver Today" : "Сегодня выдаем"} ({bookingsToday.length})
+            </h3>
+          </div>
+          <div className="panel-body" style={{ padding: "1rem" }}>
+            {bookingsToday.length === 0 ? (
+              <p className="muted" style={{ margin: 0 }}>{locale === "en" ? "No deliveries today." : "Сегодня выдач нет."}</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                {bookingsToday.map((booking) => {
+                  const time = booking.start_date && booking.start_date.includes("T") ? booking.start_date.split("T")[1].slice(0, 5) : "12:00";
+                  return (
+                    <div key={booking.id} style={{ padding: "0.5rem 0.75rem", background: "var(--bg-box, rgba(0,0,0,0.02))", borderRadius: "6px", border: "1px solid var(--line, #e2e8f0)", fontSize: "14px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "600", marginBottom: "0.25rem" }}>
+                        <span>
+                          <a href={`/bookings/${booking.id}`} style={{ textDecoration: "underline" }}>{booking.booking_number}</a>
+                          {time && <span style={{ marginLeft: "8px", color: "var(--accent, #3b82f6)" }}>⏱️ {time}</span>}
+                        </span>
+                      </div>
+                      <div style={{ color: "var(--text-main, #1e293b)" }}>
+                        🚗 <strong>{booking.vehicle}</strong>
+                      </div>
+                      <div style={{ color: "var(--text-muted, #64748b)", fontSize: "13px" }}>
+                        👤 {booking.customer_name}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Tomorrow */}
+        <section className="panel" style={{ borderLeft: "4px solid #3b82f6", margin: 0 }}>
+          <div className="panel-head" style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--line, #e2e8f0)", background: "rgba(59, 130, 246, 0.05)" }}>
+            <h3 style={{ margin: 0, fontSize: "1rem", color: "#3b82f6", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span>🔵</span> {locale === "en" ? "Tomorrow: Prepare to deliver" : "Завтра: приготовиться к выдаче"} ({bookingsTomorrow.length})
+            </h3>
+          </div>
+          <div className="panel-body" style={{ padding: "1rem" }}>
+            {bookingsTomorrow.length === 0 ? (
+              <p className="muted" style={{ margin: 0 }}>{locale === "en" ? "No deliveries tomorrow." : "Завтра выдач нет."}</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                {bookingsTomorrow.map((booking) => {
+                  const time = booking.start_date && booking.start_date.includes("T") ? booking.start_date.split("T")[1].slice(0, 5) : "12:00";
+                  return (
+                    <div key={booking.id} style={{ padding: "0.5rem 0.75rem", background: "var(--bg-box, rgba(0,0,0,0.02))", borderRadius: "6px", border: "1px solid var(--line, #e2e8f0)", fontSize: "14px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "600", marginBottom: "0.25rem" }}>
+                        <span>
+                          <a href={`/bookings/${booking.id}`} style={{ textDecoration: "underline" }}>{booking.booking_number}</a>
+                          {time && <span style={{ marginLeft: "8px", color: "var(--accent, #3b82f6)" }}>⏱️ {time}</span>}
+                        </span>
+                      </div>
+                      <div style={{ color: "var(--text-main, #1e293b)" }}>
+                        🚗 <strong>{booking.vehicle}</strong>
+                      </div>
+                      <div style={{ color: "var(--text-muted, #64748b)", fontSize: "13px" }}>
+                        👤 {booking.customer_name}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
       <section className="panel">
         <div className="panel-head"><h2>{tr(locale, "currentBookings")}</h2></div>
         <div className="table-wrap">
