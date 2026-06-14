@@ -82,3 +82,22 @@ Business rule:
 - Insurance, Por Ror Bor / road tax and inspection can be renewed during a rental.
 - They create reminders for owner/Thomas.
 - They must not block booking, handover, active rental, or public advertising.
+
+## Supabase backups
+
+Checked on 2026-06-14 in Supabase Dashboard.
+
+Current state:
+- Scheduled database backups are enabled.
+- Supabase states that projects are backed up daily around midnight in the project's region.
+- Visible backups include physical backups for 07 Jun 2026 through 13 Jun 2026.
+- Latest visible backup at check time: 13 Jun 2026 15:54:39 UTC.
+- Point in Time Recovery is not enabled; Supabase shows it as a Pro Plan add-on.
+
+Important limitation:
+- Supabase database backups do not include Storage API objects.
+- The database backup restores metadata only. Deleted uploaded files/photos/documents are not restored by database backup alone.
+
+Operational rule:
+- Before major production changes, confirm a fresh scheduled backup exists.
+- For full disaster recovery, add a separate Storage backup/export process for customer documents, vehicle photos and uploaded media.
