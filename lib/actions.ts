@@ -3701,6 +3701,48 @@ const mediaSchema = z.object({
   field: z.string().min(1)
 });
 
+const customerDocumentMimeTypes = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+const customerDocumentMimeTypeSet = new Set(customerDocumentMimeTypes);
+const customerDocumentMaxSize = 15 * 1024 * 1024;
+
+async function ensureCustomerDocumentsBucket(supabase: ReturnType<typeof createServiceSupabaseClient>) {
+  const { error: updateError } = await supabase.storage.updateBucket("customer-documents", {
+    public: false,
+    fileSizeLimit: "15MB",
+    allowedMimeTypes: customerDocumentMimeTypes
+  });
+  if (!updateError) return null;
+  if (!/bucket|not found/i.test(updateError.message)) return updateError;
+
+  const { error: createError } = await supabase.storage.createBucket("customer-documents", {
+    public: false,
+    fileSizeLimit: "15MB",
+    allowedMimeTypes: customerDocumentMimeTypes
+  });
+  if (createError && !/already exists/i.test(createError.message)) return createError;
+  return null;
+}
+
+async function ensureMediaBucket(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  bucket: "handover-media" | "return-media" | "contracts" | "vehicle-photos"
+) {
+  const config =
+    bucket === "contracts"
+      ? { public: true, fileSizeLimit: "25MB", allowedMimeTypes: ["image/jpeg", "image/png", "image/webp", "application/pdf"] }
+      : bucket === "vehicle-photos"
+      ? { public: true, fileSizeLimit: "8MB", allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"] }
+      : { public: true, fileSizeLimit: "50MB", allowedMimeTypes: ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime", "video/webm"] };
+
+  const { error: updateError } = await supabase.storage.updateBucket(bucket, config);
+  if (!updateError) return null;
+  if (!/bucket|not found/i.test(updateError.message)) return updateError;
+
+  const { error: createError } = await supabase.storage.createBucket(bucket, config);
+  if (createError && !/already exists/i.test(createError.message)) return createError;
+  return null;
+}
+
 const appUserSchema = z.object({
   tenant_id: z.string().uuid().optional(),
   email: z.string().email(),
@@ -4218,6 +4260,15 @@ export async function uploadBookingMediaAction(formData: FormData): Promise<Acti
     console.warn("No file selected.");
     return actionError("Выберите файл для загрузки.");
   }
+  if ((input.bucket === "handover-media" || input.bucket === "return-media") && file.size > 50 * 1024 * 1024) {
+    return actionError("Файл слишком большой. Максимум 50 MB для фото/видео выдачи и возврата.");
+  }
+  if (input.bucket === "customer-documents") {
+    if (file.size > customerDocumentMaxSize) return actionError("Файл слишком большой. Максимум 15 MB.");
+    if (file.type && !customerDocumentMimeTypeSet.has(file.type)) {
+      return actionError(`Неподдерживаемый тип файла: ${file.type}. Можно JPG, PNG, WebP или PDF.`);
+    }
+  }
 
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = `${input.booking_id}/${input.field}/${Date.now()}-${safeName}`;
@@ -4232,10 +4283,31 @@ export async function uploadBookingMediaAction(formData: FormData): Promise<Acti
     return actionError("Бронь не найдена или недоступна текущему пользователю.");
   }
 
-  const { error: uploadError } = await supabase.storage.from(input.bucket).upload(path, file, {
-    contentType: file.type,
+  const bucketError =
+    input.bucket === "customer-documents"
+      ? await ensureCustomerDocumentsBucket(supabase)
+      : await ensureMediaBucket(supabase, input.bucket);
+  if (bucketError) {
+    return actionError(`Хранилище ${input.bucket} не готово: ${bucketError.message}`);
+  }
+
+  let { error: uploadError } = await supabase.storage.from(input.bucket).upload(path, file, {
+    contentType: file.type || "application/octet-stream",
     upsert: false
   });
+
+  if (uploadError && /bucket|not found/i.test(uploadError.message)) {
+    const retryBucketError =
+      input.bucket === "customer-documents"
+        ? await ensureCustomerDocumentsBucket(supabase)
+        : await ensureMediaBucket(supabase, input.bucket);
+    if (!retryBucketError) {
+      ({ error: uploadError } = await supabase.storage.from(input.bucket).upload(path, file, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false
+      }));
+    }
+  }
 
   if (uploadError) {
     console.error(uploadError.message);
@@ -4310,15 +4382,36 @@ export async function uploadCustomerMediaAction(formData: FormData): Promise<Act
   if (!(file instanceof File) || file.size === 0) {
     return actionError("Выберите файл для загрузки.");
   }
+  if (file.size > customerDocumentMaxSize) {
+    return actionError("Файл слишком большой. Максимум 15 MB.");
+  }
+  if (file.type && !customerDocumentMimeTypeSet.has(file.type)) {
+    return actionError(`Неподдерживаемый тип файла: ${file.type}. Можно JPG, PNG, WebP или PDF.`);
+  }
 
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const storagePath = `customers/${customerId}/${field}/${Date.now()}-${safeName}`;
   const bucket = "customer-documents";
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, file, {
-    contentType: file.type,
+  const bucketError = await ensureCustomerDocumentsBucket(supabase);
+  if (bucketError) {
+    return actionError(`Хранилище документов не готово: ${bucketError.message}`);
+  }
+
+  let { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, file, {
+    contentType: file.type || "application/octet-stream",
     upsert: false
   });
+
+  if (uploadError && /bucket|not found/i.test(uploadError.message)) {
+    const retryBucketError = await ensureCustomerDocumentsBucket(supabase);
+    if (!retryBucketError) {
+      ({ error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, file, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false
+      }));
+    }
+  }
 
   if (uploadError) {
     console.error(uploadError.message);

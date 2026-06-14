@@ -24,6 +24,8 @@ const allowedMimeTypes = new Set([
   "image/webp",
   "application/pdf"
 ]);
+const customerDocumentsBucket = "customer-documents";
+const maxDocumentSize = 15 * 1024 * 1024;
 
 function dbFieldFor(field: string) {
   if (field === "passport") return "passport_photo_url";
@@ -54,6 +56,24 @@ function parseStoredDocuments(value: unknown): StoredDocument[] {
   return [{ url: raw, name: "Document", type: "image/jpeg" }];
 }
 
+async function ensureCustomerDocumentsBucket(supabase: ReturnType<typeof createServiceSupabaseClient>) {
+  const { error: updateError } = await supabase.storage.updateBucket(customerDocumentsBucket, {
+    public: false,
+    fileSizeLimit: "15MB",
+    allowedMimeTypes: Array.from(allowedMimeTypes)
+  });
+  if (!updateError) return null;
+  if (!/bucket|not found/i.test(updateError.message)) return updateError;
+
+  const { error: createError } = await supabase.storage.createBucket(customerDocumentsBucket, {
+    public: false,
+    fileSizeLimit: "15MB",
+    allowedMimeTypes: Array.from(allowedMimeTypes)
+  });
+  if (createError && !/already exists/i.test(createError.message)) return createError;
+  return null;
+}
+
 export async function POST(request: Request, { params }: RouteParams) {
   const { id: customerId } = await params;
   const user = await getCurrentUserContext();
@@ -82,7 +102,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   if (!(file instanceof File) || file.size === 0) {
     return NextResponse.json({ error: "Выберите файл для загрузки." }, { status: 400 });
   }
-  if (file.size > 15 * 1024 * 1024) {
+  if (file.size > maxDocumentSize) {
     return NextResponse.json({ error: "Файл слишком большой. Максимум 15 MB." }, { status: 413 });
   }
   if (file.type && !allowedMimeTypes.has(file.type)) {
@@ -103,18 +123,31 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const storagePath = `customers/${customerId}/${field}/${Date.now()}-${safeName}`;
-  const bucket = "customer-documents";
+  const bucketError = await ensureCustomerDocumentsBucket(supabase);
+  if (bucketError) {
+    return NextResponse.json({ error: `Хранилище документов не готово: ${bucketError.message}` }, { status: 500 });
+  }
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, file, {
+  let { error: uploadError } = await supabase.storage.from(customerDocumentsBucket).upload(storagePath, file, {
     contentType: file.type || "application/octet-stream",
     upsert: false
   });
+
+  if (uploadError && /bucket|not found/i.test(uploadError.message)) {
+    const retryBucketError = await ensureCustomerDocumentsBucket(supabase);
+    if (!retryBucketError) {
+      ({ error: uploadError } = await supabase.storage.from(customerDocumentsBucket).upload(storagePath, file, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false
+      }));
+    }
+  }
 
   if (uploadError) {
     return NextResponse.json({ error: `Файл не загружен: ${uploadError.message}` }, { status: 400 });
   }
 
-  const fileUrl = `${bucket}:${storagePath}`;
+  const fileUrl = `${customerDocumentsBucket}:${storagePath}`;
   const currentValue = (customer as Record<string, unknown>)[dbField];
   const files = parseStoredDocuments(currentValue);
   files.push({
@@ -130,7 +163,7 @@ export async function POST(request: Request, { params }: RouteParams) {
     .eq("id", customerId);
 
   if (updateError) {
-    await supabase.storage.from(bucket).remove([storagePath]).catch(() => undefined);
+    await supabase.storage.from(customerDocumentsBucket).remove([storagePath]).catch(() => undefined);
     return NextResponse.json({ error: `Документ загружен, но не привязан к клиенту: ${updateError.message}` }, { status: 400 });
   }
 
