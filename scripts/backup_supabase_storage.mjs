@@ -93,6 +93,20 @@ async function downloadObject(supabase, backupRoot, file) {
   return { ...file, local_path: localPath, skipped: false };
 }
 
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 async function main() {
   loadEnvFile(".env.local");
 
@@ -108,6 +122,7 @@ async function main() {
     .map((bucket) => bucket.trim())
     .filter(Boolean);
   const dryRun = process.argv.includes("--dry-run");
+  const concurrency = Math.max(1, Number(process.env.STORAGE_BACKUP_CONCURRENCY ?? 6));
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
     realtime: { transport: WebSocket }
@@ -127,13 +142,15 @@ async function main() {
     try {
       const files = await listFilesRecursively(supabase, bucket);
       manifest.buckets.push({ bucket, files: files.length });
-      for (const file of files) {
+      const downloaded = await mapWithConcurrency(files, concurrency, async (file) => {
         try {
-          manifest.files.push(dryRun ? file : await downloadObject(supabase, backupRoot, file));
+          return dryRun ? file : await downloadObject(supabase, backupRoot, file);
         } catch (error) {
           manifest.errors.push({ bucket, path: file.path, error: error instanceof Error ? error.message : String(error) });
+          return null;
         }
-      }
+      });
+      manifest.files.push(...downloaded.filter(Boolean));
     } catch (error) {
       manifest.errors.push({ bucket, error: error instanceof Error ? error.message : String(error) });
     }
@@ -146,7 +163,8 @@ async function main() {
     buckets: manifest.buckets,
     files: manifest.files.length,
     errors: manifest.errors.length,
-    dry_run: dryRun
+    dry_run: dryRun,
+    concurrency
   }));
 
   if (manifest.errors.length > 0) process.exitCode = 1;
