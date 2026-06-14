@@ -2042,9 +2042,13 @@ th {
 
   .content {
     padding: 16px;
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
   }
 
   .kpis,
+  .grid-2,
   .grid-3,
   .grid-4,
   .form-grid,
@@ -2092,6 +2096,97 @@ th {
   .form-result {
     align-items: flex-start;
     justify-content: flex-start;
+    width: 100%;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .panel,
+  .panel-body,
+  .task,
+  .total,
+  .filters,
+  .badge-row,
+  .status-stack {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .panel {
+    overflow: hidden;
+  }
+
+  .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .panel-head > *,
+  .panel-head h2,
+  .panel-head .sub {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .panel-head div[style*="display: flex"],
+  .task div[style*="display: flex"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    justify-content: flex-start !important;
+  }
+
+  .task div[style*="display: flex"] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+
+  .task a,
+  .task span,
+  .task strong,
+  .booking-number-cell,
+  .booking-number-cell a,
+  .booking-number-cell span {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .filters {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .filters form,
+  .filters button,
+  .filters .button,
+  .filters .primary,
+  .task .button,
+  .task .primary,
+  .panel-body > form .primary,
+  .panel-body > p .primary {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .total {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .total b {
     overflow-wrap: anywhere;
   }
 
