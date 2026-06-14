@@ -272,7 +272,7 @@ export function DashboardPage({ user, data, locale }: PageProps) {
   const availableVehicles = data.vehicles.filter((vehicle) => vehicle.status === "available").length;
   const serviceVehicles = data.vehicles.filter((vehicle) => ["maintenance", "repair"].includes(vehicle.status)).length;
   const reservedVehicles = data.vehicles.filter((vehicle) => vehicle.status === "reserved").length;
-  const rentedVehicles = data.vehicles.filter((vehicle) => ["handed_over", "in_use", "returning"].includes(vehicle.status)).length;
+  const rentedVehicles = data.vehicles.filter((vehicle) => ["handed_over", "active", "in_use", "returning"].includes(vehicle.status)).length;
   const recoveredPct = data.vehicles.length ? Math.round((recovered / data.vehicles.length) * 100) : 0;
   const utilizationAvg = data.vehicles.length ? Math.round(data.vehicles.reduce((sum, vehicle) => sum + vehicle.utilization_90, 0) / data.vehicles.length) : 0;
   const paybackAvg = data.vehicles.length ? Math.round(data.vehicles.reduce((sum, vehicle) => sum + vehicle.payback_pct, 0) / data.vehicles.length) : 0;
@@ -526,7 +526,7 @@ export function DashboardPage({ user, data, locale }: PageProps) {
   );
 }
 
-export function FleetPage({ user, data, locale, selectedCategory = "all" }: PageProps & { selectedCategory?: "all" | VehicleCategory | "weak" | "rented" }) {
+export function FleetPage({ user, data, locale, selectedCategory = "all", selectedRentedCategory = "all" }: PageProps & { selectedCategory?: "all" | VehicleCategory | "weak" | "rented"; selectedRentedCategory?: "all" | VehicleCategory }) {
   const canManageFleet = user.role === "owner" || user.role === "manager" || user.role === "marketer";
   const canSeeStrategic = user.role === "owner" || user.role === "accountant";
   const rentedStatuses = new Set(["handed_over", "active", "in_use", "returning"]);
@@ -553,13 +553,14 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
     ["pickup", tr(locale, "pickup")],
     ["convertible", tr(locale, "convertible")]
   ];
+  const rentedVehiclesList = data.vehicles.filter(isRentedVehicle);
   const visibleVehicles =
     selectedCategory === "all"
       ? data.vehicles
       : selectedCategory === "weak"
         ? data.vehicles.filter((vehicle) => vehicle.status_financial === "UNDERPERFORMING")
         : selectedCategory === "rented"
-          ? data.vehicles.filter(isRentedVehicle)
+          ? rentedVehiclesList.filter((vehicle) => selectedRentedCategory === "all" || vehicle.category === selectedRentedCategory)
           : data.vehicles.filter((vehicle) => vehicle.category === selectedCategory);
   const publicVehicles = data.vehicles.filter((vehicle) => vehicle.public_visible);
   const blockedPublicStatuses = new Set(["reserved", "handed_over", "in_use", "returning", "maintenance", "repair", "retired"]);
@@ -675,12 +676,16 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
         <div className="panel-body">
           <div className="filters">
             {categories.map(([key, label]) => {
-              const count = key === "all" ? data.vehicles.length : data.vehicles.filter((vehicle) => vehicle.category === key).length;
-              const href = key === "all" ? "/fleet" : `/fleet?category=${key}`;
-              return <a className={`chip ${selectedCategory === key ? "active" : ""}`} href={href} key={key}>{label}<b>{count}</b></a>;
+              const source = selectedCategory === "rented" ? rentedVehiclesList : data.vehicles;
+              const count = key === "all" ? source.length : source.filter((vehicle) => vehicle.category === key).length;
+              const href = selectedCategory === "rented"
+                ? key === "all" ? "/fleet?category=rented" : `/fleet?category=rented&rented_category=${key}`
+                : key === "all" ? "/fleet" : `/fleet?category=${key}`;
+              const active = selectedCategory === "rented" ? selectedRentedCategory === key : selectedCategory === key;
+              return <a className={`chip ${active ? "active" : ""}`} href={href} key={key}>{label}<b>{count}</b></a>;
             })}
             <a className={`chip ${selectedCategory === "rented" ? "active" : ""}`} href="/fleet?category=rented">
-              {tx(locale, "В аренде", "Rented")}<b>{data.vehicles.filter(isRentedVehicle).length}</b>
+              {tx(locale, "В аренде", "Rented")}<b>{rentedVehiclesList.length}</b>
             </a>
             <a className="chip" href="/maintenance">
               {tx(locale, "Сервис", "Service")}<b>{activeServiceBlocksByVehicle.size}</b>
