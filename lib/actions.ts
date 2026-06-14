@@ -2510,9 +2510,7 @@ export async function createBookingAction(formData: FormData): Promise<ActionRes
   await refreshCustomerBookingStats(supabase, user.tenantId, input.customer_id);
 
   if (booking?.id) {
-    sendCustomerNotification(booking.id, "booking_confirmed", user.tenantId).catch((err) =>
-      console.error("Failed to send booking confirmed notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "booking_confirmed", user.tenantId);
   }
 
   revalidateBookingSurfaces({
@@ -2706,9 +2704,7 @@ export async function updateBookingDetailsAction(formData: FormData): Promise<Ac
     await refreshCustomerBookingStats(supabase, user.tenantId, input.customer_id);
   }
 
-  sendCustomerNotification(input.booking_id, "booking_updated", user.tenantId).catch((err) =>
-    console.error("Failed to send booking updated notification:", err)
-  );
+  await sendCustomerNotification(input.booking_id, "booking_updated", user.tenantId);
 
   revalidateBookingSurfaces({
     bookingId: input.booking_id,
@@ -2990,17 +2986,11 @@ export async function updateBookingStatusAction(formData: FormData): Promise<Act
   const isConfirmedEvent = ["confirmed", "paid_deposit"].includes(newStatus) && !["confirmed", "paid_deposit"].includes(oldStatus);
 
   if (isConfirmedEvent) {
-    sendCustomerNotification(booking.id, "booking_confirmed", user.tenantId).catch((err) =>
-      console.error("Failed to send booking confirmed notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "booking_confirmed", user.tenantId);
   } else if (newStatus === "completed" && oldStatus !== "completed") {
-    sendCustomerNotification(booking.id, "rental_returned", user.tenantId).catch((err) =>
-      console.error("Failed to send rental returned notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "rental_returned", user.tenantId);
   } else if (newStatus !== oldStatus) {
-    sendCustomerNotification(booking.id, "booking_updated", user.tenantId).catch((err) =>
-      console.error("Failed to send booking updated notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "booking_updated", user.tenantId);
   }
 
   await syncVehicleStatusForBooking(supabase, user.tenantId, booking.vehicle_id);
@@ -3163,17 +3153,11 @@ export async function updateBookingRentalStatusAction(formData: FormData): Promi
   const newRentalStatus = input.rental_status;
 
   if (["handed_over", "active"].includes(newRentalStatus) && !["handed_over", "active"].includes(oldRentalStatus)) {
-    sendCustomerNotification(booking.id, "rental_active", user.tenantId).catch((err) =>
-      console.error("Failed to send rental active notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "rental_active", user.tenantId);
   } else if (newRentalStatus === "returned" && oldRentalStatus !== "returned") {
-    sendCustomerNotification(booking.id, "rental_returned", user.tenantId).catch((err) =>
-      console.error("Failed to send rental returned notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "rental_returned", user.tenantId);
   } else if (newRentalStatus !== oldRentalStatus) {
-    sendCustomerNotification(booking.id, "booking_updated", user.tenantId).catch((err) =>
-      console.error("Failed to send booking updated notification:", err)
-    );
+    await sendCustomerNotification(booking.id, "booking_updated", user.tenantId);
   }
 
   await syncVehicleStatusForBooking(supabase, user.tenantId, booking.vehicle_id);
@@ -3292,9 +3276,7 @@ export async function replaceBookingVehicleAction(formData: FormData): Promise<v
     console.warn("Could not insert system activity:", e);
   }
 
-  sendCustomerNotification(input.booking_id, "booking_updated", user.tenantId).catch((err) =>
-    console.error("Failed to send booking updated notification (vehicle replace):", err)
-  );
+  await sendCustomerNotification(input.booking_id, "booking_updated", user.tenantId);
 
   revalidateBookingSurfaces({
     bookingId: input.booking_id,
@@ -3374,29 +3356,101 @@ async function sendBookingPaymentNotification(
       : `Здравствуйте, ${customerName}! Мы получили оплату ${moneyText(paidNow)} по брони #${booking.booking_number} (${vehicleName}).\n\nБаза оплаты: ${coverageLabel} (${moneyText(coverage.rentalDue)}).\nВесь срок аренды: ${fullTermLabel}.\nАренда сейчас оплачена до ${paidThrough}.\n${balanceLabel}: ${moneyText(coverage.remainingRental)}.\nОплачено депозита: ${moneyText(coverage.depositPaid)}.\n\nСпасибо! Мы все зафиксировали в вашей брони.`;
 
     const messagingSecret = process.env.EPICENTER_MESSAGING_SECRET || "00d57c65010537e2d52f8979d0ef8c88204410a4dcf7b6b36187879c08a05034";
+    const recordPaymentNotificationAttempt = async (
+      channel: "whatsapp" | "telegram",
+      recipient: string,
+      status: "sent" | "failed",
+      rawPayload: Record<string, unknown>
+    ) => {
+      const { error: insertError } = await supabase.from("conversation_messages").insert({
+        tenant_id: tenantId,
+        customer_id: customer.id,
+        channel,
+        direction: "outbound",
+        sender_type: "system",
+        sender_name: "CRM payment automation",
+        contact_handle: recipient,
+        message_text: channel === "telegram" ? messageText.replace(/\*/g, "") : messageText,
+        message_type: "text",
+        status,
+        raw_payload: {
+          event: "booking_payment_recorded",
+          booking_id: booking.id,
+          booking_number: booking.booking_number,
+          paid_now: paidNow,
+          paid_through: coverage.paidThroughDate,
+          remaining_rental: coverage.remainingRental,
+          deposit_paid: coverage.depositPaid,
+          ...rawPayload
+        },
+        occurred_at: new Date().toISOString()
+      });
+      if (insertError) {
+        console.error(`Payment notification ${channel} history insert failed: ${insertError.message}`);
+      }
+    };
+
     const phoneNum = customer.whatsapp || customer.phone;
     if (phoneNum) {
-      fetch(process.env.WHATSAPP_SEND_URL || "https://n8nx.pro/webhook/whatsappOutboundWfCR/webhook/epicenter-messaging/whatsapp/send", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-epicenter-messaging-secret": messagingSecret
-        },
-        body: JSON.stringify({ phoneNumber: phoneNum, messageText })
-      }).catch((err) => console.error("Payment notification WhatsApp send failed:", err));
-    }
-
-    if (customer.telegram_username) {
-      const cleanedTg = String(customer.telegram_username).trim().replace(/^(https?:\/\/)?(www\.)?t\.me\//i, "").replace(/^@/, "");
-      if (cleanedTg) {
-        fetch(process.env.TELEGRAM_SEND_URL || "https://n8nx.pro/epicenter-messaging/telegram/send", {
+      const gateway = process.env.WHATSAPP_SEND_URL || "https://n8nx.pro/webhook/whatsappOutboundWfCR/webhook/epicenter-messaging/whatsapp/send";
+      try {
+        const response = await fetch(gateway, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "x-epicenter-messaging-secret": messagingSecret
           },
-          body: JSON.stringify({ TelegramUsername: `@${cleanedTg}`, messageText: messageText.replace(/\*/g, "") })
-        }).catch((err) => console.error("Payment notification Telegram send failed:", err));
+          body: JSON.stringify({ phoneNumber: phoneNum, messageText })
+        });
+        const responseText = await response.text().catch(() => "");
+        await recordPaymentNotificationAttempt("whatsapp", phoneNum, response.ok ? "sent" : "failed", {
+          gateway,
+          http_status: response.status,
+          response_text: responseText.slice(0, 500)
+        });
+        if (!response.ok) {
+          console.error(`Payment notification WhatsApp send failed: ${response.status} ${responseText}`);
+        }
+      } catch (err) {
+        await recordPaymentNotificationAttempt("whatsapp", phoneNum, "failed", {
+          gateway,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        console.error("Payment notification WhatsApp send failed:", err);
+      }
+    }
+
+    if (customer.telegram_username) {
+      const cleanedTg = String(customer.telegram_username).trim().replace(/^(https?:\/\/)?(www\.)?t\.me\//i, "").replace(/^@/, "");
+      if (cleanedTg) {
+        const tgUsername = `@${cleanedTg}`;
+        const gateway = process.env.TELEGRAM_SEND_URL || "https://n8nx.pro/epicenter-messaging/telegram/send";
+        const telegramMessageText = messageText.replace(/\*/g, "");
+        try {
+          const response = await fetch(gateway, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-epicenter-messaging-secret": messagingSecret
+            },
+            body: JSON.stringify({ TelegramUsername: tgUsername, messageText: telegramMessageText })
+          });
+          const responseText = await response.text().catch(() => "");
+          await recordPaymentNotificationAttempt("telegram", tgUsername, response.ok ? "sent" : "failed", {
+            gateway,
+            http_status: response.status,
+            response_text: responseText.slice(0, 500)
+          });
+          if (!response.ok) {
+            console.error(`Payment notification Telegram send failed: ${response.status} ${responseText}`);
+          }
+        } catch (err) {
+          await recordPaymentNotificationAttempt("telegram", tgUsername, "failed", {
+            gateway,
+            error: err instanceof Error ? err.message : String(err)
+          });
+          console.error("Payment notification Telegram send failed:", err);
+        }
       }
     }
   } catch (err) {
@@ -3514,9 +3568,7 @@ export async function recordBookingPaymentsAction(formData: FormData): Promise<A
   await refreshCustomerBookingStats(supabase, user.tenantId, booking.customer_id);
   const paidNow = rows.reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
   if (paidNow > 0) {
-    sendBookingPaymentNotification(supabase, user.tenantId, input.booking_id, paidNow).catch((err) =>
-      console.error("Failed to send booking payment notification:", err)
-    );
+    await sendBookingPaymentNotification(supabase, user.tenantId, input.booking_id, paidNow);
   }
 
   revalidatePath("/");

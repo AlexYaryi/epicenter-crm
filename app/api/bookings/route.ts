@@ -257,9 +257,7 @@ export async function POST(request: Request) {
   }
 
   if (data?.id) {
-    sendCustomerNotification(data.id, "booking_confirmed", user.tenantId).catch((err) =>
-      console.error("Failed to send booking confirmed notification:", err)
-    );
+    await sendCustomerNotification(data.id, "booking_confirmed", user.tenantId);
   }
 
   revalidatePath("/");

@@ -82,7 +82,7 @@ function messageFor(kind: "insurance" | "road_tax" | "inspection", vehicle: Vehi
 
 async function sendMessage(recipient: Recipient, messageText: string) {
   const messagingSecret = process.env.EPICENTER_MESSAGING_SECRET || "00d57c65010537e2d52f8979d0ef8c88204410a4dcf7b6b36187879c08a05034";
-  const sends: Promise<unknown>[] = [];
+  const sends: Promise<{ channel: "whatsapp" | "telegram"; ok: boolean; status?: number; error?: string }>[] = [];
 
   if (recipient.phone) {
     sends.push(fetch(process.env.WHATSAPP_SEND_URL || "https://n8nx.pro/webhook/whatsappOutboundWfCR/webhook/epicenter-messaging/whatsapp/send", {
@@ -92,7 +92,9 @@ async function sendMessage(recipient: Recipient, messageText: string) {
         "x-epicenter-messaging-secret": messagingSecret
       },
       body: JSON.stringify({ phoneNumber: recipient.phone, messageText })
-    }).catch(() => undefined));
+    })
+      .then((response) => ({ channel: "whatsapp" as const, ok: response.ok, status: response.status }))
+      .catch((error) => ({ channel: "whatsapp" as const, ok: false, error: error instanceof Error ? error.message : String(error) })));
   }
 
   const telegram = String(recipient.telegram_username ?? "").trim().replace(/^(https?:\/\/)?(www\.)?t\.me\//i, "").replace(/^@/, "");
@@ -104,10 +106,18 @@ async function sendMessage(recipient: Recipient, messageText: string) {
         "x-epicenter-messaging-secret": messagingSecret
       },
       body: JSON.stringify({ TelegramUsername: `@${telegram}`, messageText })
-    }).catch(() => undefined));
+    })
+      .then((response) => ({ channel: "telegram" as const, ok: response.ok, status: response.status }))
+      .catch((error) => ({ channel: "telegram" as const, ok: false, error: error instanceof Error ? error.message : String(error) })));
   }
 
-  await Promise.all(sends);
+  const results = await Promise.all(sends);
+  return {
+    attempts: results.length,
+    sent: results.filter((result) => result.ok).length,
+    failed: results.filter((result) => !result.ok).length,
+    results
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -157,6 +167,9 @@ export async function POST(request: NextRequest) {
   }
 
   let reminders = 0;
+  let attempts = 0;
+  let sent = 0;
+  let failed = 0;
   for (const vehicle of (vehicles ?? []) as VehicleRow[]) {
     const checks: Array<{ kind: "insurance" | "road_tax" | "inspection"; dueDate: string }> = [];
     const latestInsurance = latestInsuranceByVehicle.get(vehicle.id);
@@ -172,13 +185,16 @@ export async function POST(request: NextRequest) {
       if (daysLeft === null || !reminderDays.has(daysLeft)) continue;
       const messageText = messageFor(check.kind, vehicle, check.dueDate, daysLeft);
       for (const recipient of recipientsByTenant.get(vehicle.tenant_id) ?? []) {
-        await sendMessage(recipient, messageText);
+        const result = await sendMessage(recipient, messageText);
         reminders += 1;
+        attempts += result.attempts;
+        sent += result.sent;
+        failed += result.failed;
       }
     }
   }
 
-  return NextResponse.json({ ok: true, reminders, today });
+  return NextResponse.json({ ok: failed === 0, reminders, attempts, sent, failed, today });
 }
 
 export async function GET(request: NextRequest) {
