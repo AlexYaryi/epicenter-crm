@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import WebSocket from "ws";
 
 const defaultBuckets = [
   "vehicle-photos",
@@ -107,7 +108,10 @@ async function main() {
     .map((bucket) => bucket.trim())
     .filter(Boolean);
   const dryRun = process.argv.includes("--dry-run");
-  const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false },
+    realtime: { transport: WebSocket }
+  });
 
   mkdirSync(backupRoot, { recursive: true });
   const manifest = {
