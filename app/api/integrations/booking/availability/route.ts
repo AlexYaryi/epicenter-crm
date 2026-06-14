@@ -43,6 +43,11 @@ function complianceReason(vehicle: { road_tax_due_date?: unknown; inspection_exp
   return null;
 }
 
+function publicDailyRate(value: unknown) {
+  const rate = Number(value ?? 0);
+  return Number.isFinite(rate) && rate > 0 ? rate : 1000;
+}
+
 function authorized(request: NextRequest) {
   const expected = process.env.EPICENTER_MESSAGING_SECRET || process.env.LEAD_WEBHOOK_SECRET;
   if (!expected) return false;
@@ -157,15 +162,16 @@ export async function GET(request: NextRequest) {
       categorySummary[cat] = {
         category: cat,
         available_count: 0,
-        min_daily_rate_thb: Number(vehicle.daily_rate_short_term ?? 1000),
+        min_daily_rate_thb: publicDailyRate(vehicle.daily_rate_short_term),
         vehicles: []
       };
     }
 
     categorySummary[cat].available_count += 1;
     categorySummary[cat].vehicles.push(`${vehicle.make} ${vehicle.model}`);
-    if (Number(vehicle.daily_rate_short_term) < categorySummary[cat].min_daily_rate_thb) {
-      categorySummary[cat].min_daily_rate_thb = Number(vehicle.daily_rate_short_term);
+    const rate = publicDailyRate(vehicle.daily_rate_short_term);
+    if (rate < categorySummary[cat].min_daily_rate_thb) {
+      categorySummary[cat].min_daily_rate_thb = rate;
     }
   }
 
