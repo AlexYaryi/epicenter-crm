@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "backup:storage": "node scripts/backup_supabase_storage.mjs",
     "test:payment-status": "node scripts/payment-status-regression.js",
     "typecheck": "next typegen && tsc --noEmit",
     "preflight": "npm run typecheck && npm run build",

@@ -44,6 +44,7 @@ Expected:
 ```cron
 */30 * * * * cd /var/www/epicenter-crm && /usr/bin/node tools/send_rental_reminders.js >> /var/log/epicenter-crm-reminders.log 2>&1
 0 9 * * * cd /var/www/epicenter-crm && set -a && . ./.env.local && set +a && curl -fsS -H "x-epicenter-messaging-secret: $EPICENTER_MESSAGING_SECRET" "${NEXT_PUBLIC_APP_URL:-https://crm.phuketcar.rent}/api/compliance/reminders" >> /var/log/epicenter-crm-compliance-reminders.log 2>&1
+30 2 * * * cd /var/www/epicenter-crm && npm run backup:storage >> /var/log/epicenter-crm-storage-backup.log 2>&1
 ```
 
 ## Deployment preflight
@@ -100,4 +101,11 @@ Important limitation:
 
 Operational rule:
 - Before major production changes, confirm a fresh scheduled backup exists.
-- For full disaster recovery, add a separate Storage backup/export process for customer documents, vehicle photos and uploaded media.
+- Storage objects are backed up on the VPS by `npm run backup:storage`.
+- Default backup path: `/var/backups/epicenter-crm-storage/YYYY-MM-DD`.
+- Check backup status with:
+
+```bash
+tail -50 /var/log/epicenter-crm-storage-backup.log
+ls -lah /var/backups/epicenter-crm-storage
+```
