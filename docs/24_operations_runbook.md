@@ -103,6 +103,7 @@ Operational rule:
 - Before major production changes, confirm a fresh scheduled backup exists.
 - Storage objects are backed up on the VPS by `npm run backup:storage`.
 - Default backup path: `/var/backups/epicenter-crm-storage/YYYY-MM-DD`.
+- Default retention: 3 days, controlled by `STORAGE_BACKUP_RETENTION_DAYS`.
 - Check backup status with:
 
 ```bash

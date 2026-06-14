@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, basename } from "node:path";
 import { pipeline } from "node:stream/promises";
 import WebSocket from "ws";
 
@@ -44,6 +44,21 @@ function sanitizeStoragePath(path) {
     .split("/")
     .filter((part) => part && part !== "." && part !== "..")
     .join("/");
+}
+
+function pruneOldBackups(baseDir, keepDays) {
+  if (!existsSync(baseDir) || keepDays <= 0) return [];
+  const removed = [];
+  const cutoff = Date.now() - keepDays * 24 * 60 * 60 * 1000;
+  for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(entry.name)) continue;
+    const fullPath = join(baseDir, entry.name);
+    const stats = statSync(fullPath);
+    if (stats.mtimeMs >= cutoff) continue;
+    rmSync(fullPath, { recursive: true, force: true });
+    removed.push(fullPath);
+  }
+  return removed;
 }
 
 async function listFilesRecursively(supabase, bucket, prefix = "") {
@@ -116,23 +131,29 @@ async function main() {
     throw new Error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
   }
 
-  const backupRoot = join(process.env.STORAGE_BACKUP_DIR || "/var/backups/epicenter-crm-storage", todayKey());
+  const backupBaseDir = process.env.STORAGE_BACKUP_DIR || "/var/backups/epicenter-crm-storage";
+  const backupRoot = join(backupBaseDir, todayKey());
   const buckets = (process.env.STORAGE_BACKUP_BUCKETS || defaultBuckets.join(","))
     .split(",")
     .map((bucket) => bucket.trim())
     .filter(Boolean);
   const dryRun = process.argv.includes("--dry-run");
   const concurrency = Math.max(1, Number(process.env.STORAGE_BACKUP_CONCURRENCY ?? 6));
+  const retentionDays = Math.max(1, Number(process.env.STORAGE_BACKUP_RETENTION_DAYS ?? 3));
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
     realtime: { transport: WebSocket }
   });
 
   mkdirSync(backupRoot, { recursive: true });
+  const pruned = dryRun ? [] : pruneOldBackups(backupBaseDir, retentionDays);
   const manifest = {
     generated_at: new Date().toISOString(),
     backup_root: backupRoot,
+    backup_name: basename(backupRoot),
     dry_run: dryRun,
+    retention_days: retentionDays,
+    pruned,
     buckets: [],
     files: [],
     errors: []
@@ -164,7 +185,9 @@ async function main() {
     files: manifest.files.length,
     errors: manifest.errors.length,
     dry_run: dryRun,
-    concurrency
+    concurrency,
+    retention_days: retentionDays,
+    pruned: pruned.length
   }));
 
   if (manifest.errors.length > 0) process.exitCode = 1;
