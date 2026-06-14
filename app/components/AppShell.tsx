@@ -1,7 +1,7 @@
 import Image from "next/image";
 import { ActiveNav } from "@/app/components/ActiveNav";
 import { GlobalFormFeedback } from "@/app/components/GlobalFormFeedback";
-import { signOutAction } from "@/lib/auth-actions";
+import { UserProfileCard } from "@/app/components/UserProfileCard";
 import { getLocale, tr } from "@/lib/i18n";
 import { getCurrentUserContext } from "@/lib/repository";
 import type { I18nKey } from "@/lib/i18n";
@@ -14,7 +14,9 @@ const analyticsRoles: Role[] = ["owner", "accountant", "manager", "marketer"];
 
 const navItems: NavItem[] = [
   ["/", "navHome"],
+  ["/launch", "navLaunch", ["owner", "manager", "operator", "accountant"]],
   ["/fleet", "navFleet"],
+  ["/fleet?category=rented", "navRented"],
   ["/customers", "navCustomers"],
   ["/leads", "navLeads"],
   ["/bookings", "navBookings"],
@@ -25,7 +27,8 @@ const navItems: NavItem[] = [
   ["/documents", "navDocuments"],
   ["/finance", "navFinance", strategicRoles],
   ["/analytics", "navAnalytics", analyticsRoles],
-  ["/settings", "navSettings", strategicRoles]
+  ["/settings", "navSettings", strategicRoles],
+  ["/users", "navUsers", ["owner"]]
 ];
 
 function canSeeNavItem(role: Role, roles?: Role[]) {
@@ -50,22 +53,7 @@ export async function AppShell({ children, activePath = "/" }: { children: React
           </div>
         </div>
         <ActiveNav items={translatedNav} activePath={activePath} />
-        <div className="role-card">
-          <strong>{user.fullName}</strong>
-          <br />
-          {tr(locale, "role")}: {user.role}
-          <br />
-          {user.isAuthenticated ? tr(locale, "authActive") : "Demo mode"}
-          <br />
-          {tr(locale, "location")}: Phuket
-          <br />
-          NTFY: epicenter
-          {user.isAuthenticated ? (
-            <form action={signOutAction} style={{ marginTop: 12 }}>
-              <button className="button">{tr(locale, "logout")}</button>
-            </form>
-          ) : null}
-        </div>
+        <UserProfileCard user={user} locale={locale} />
       </aside>
       <main className="main">
         {children}

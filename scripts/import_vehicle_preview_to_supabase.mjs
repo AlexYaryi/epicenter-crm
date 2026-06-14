@@ -95,12 +95,7 @@ function seatsFor(category, model) {
 }
 
 function buildImportNote(row) {
-  const notes = [];
-  if (!nullableDate(row.acquisition_date)) notes.push(`Missing acquisition_date; fallback ${fallbackAcquisitionDate} used.`);
-  if (asNumber(row.capex_total_thb) <= 0) notes.push("Missing capex/acquisition cost; ROI will be incomplete until updated.");
-  if (asNumber(row.monthly_rate_thb) <= 0) notes.push("Missing medium-season monthly rate.");
-  if (asNumber(row.daily_rate_short_term_thb) <= 0) notes.push("Missing high-season 1-day rate.");
-  return notes.join(" ");
+  return "";
 }
 
 async function chunkedInsert(supabase, table, rows, chunkSize = 500) {

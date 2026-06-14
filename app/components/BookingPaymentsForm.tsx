@@ -11,6 +11,13 @@ type BookingPaymentsFormProps = {
   booking: Booking;
   tenantId: string;
   locale: Locale;
+  coverage?: {
+    rentalDue: number;
+    rentalPaid: number;
+    remainingRental: number;
+    paidThroughDate: string | null;
+    isFullyPaid: boolean;
+  };
 };
 
 function text(locale: Locale, ru: string, en: string) {
@@ -21,7 +28,7 @@ function money(value: number) {
   return `${Number(value || 0).toLocaleString("ru-RU")} THB`;
 }
 
-export function BookingPaymentsForm({ action, booking, tenantId, locale }: BookingPaymentsFormProps) {
+export function BookingPaymentsForm({ action, booking, tenantId, locale, coverage }: BookingPaymentsFormProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
@@ -46,21 +53,35 @@ export function BookingPaymentsForm({ action, booking, tenantId, locale }: Booki
     <form action={submit}>
       <input type="hidden" name="tenant_id" value={tenantId} />
       <input type="hidden" name="booking_id" value={booking.id} />
+      {coverage ? (
+        <div className="form-result wide ok" style={{ marginBottom: "12px", alignItems: "flex-start" }}>
+          <span>
+            {text(locale, "Сейчас оплачено за аренду", "Rental paid now")}: <strong>{money(coverage.rentalPaid)}</strong>
+          </span>
+          <span>
+            {text(locale, "Остаток аренды", "Rental balance")}: <strong>{money(coverage.remainingRental)}</strong>
+          </span>
+        </div>
+      ) : null}
       <div className="payment-line">
-        <strong>{text(locale, "Аренда", "Rental")}</strong>
-        <input name="rental_amount" type="number" min="0" defaultValue={booking.rental_amount} />
+        <strong>{text(locale, "Оплата аренды сейчас", "Rental payment now")}</strong>
+        <input name="rental_amount" type="number" min="0" defaultValue={0} placeholder={coverage ? String(coverage.remainingRental) : String(booking.rental_amount)} />
       </div>
       <div className="payment-line">
-        <strong>{text(locale, "Депозит", "Deposit")}</strong>
-        <input name="deposit_amount" type="number" min="0" defaultValue={booking.deposit_amount} />
+        <strong>{text(locale, "Депозит сейчас", "Deposit now")}</strong>
+        <input name="deposit_amount" type="number" min="0" defaultValue={0} placeholder={String(booking.deposit_amount)} />
       </div>
       <div className="payment-line">
-        <strong>{text(locale, "Забор", "Pickup")}</strong>
-        <input name="pickup_fee" type="number" min="0" defaultValue={booking.pickup_fee} />
+        <strong>{text(locale, "Забор сейчас", "Pickup now")}</strong>
+        <input name="pickup_fee" type="number" min="0" defaultValue={0} />
       </div>
       <div className="payment-line">
-        <strong>{text(locale, "Доставка", "Delivery")}</strong>
-        <input name="delivery_fee" type="number" min="0" defaultValue={booking.delivery_fee} />
+        <strong>{text(locale, "Доставка сейчас", "Delivery now")}</strong>
+        <input name="delivery_fee" type="number" min="0" defaultValue={0} placeholder={String(booking.delivery_fee)} />
+      </div>
+      <div className="payment-line">
+        <strong>{text(locale, "Extras сейчас", "Extras now")}</strong>
+        <input name="extras_amount" type="number" min="0" defaultValue={0} />
       </div>
       <div className="field">
         <label>{text(locale, "Метод", "Method")}</label>

@@ -69,13 +69,35 @@ export default async function Page() {
               {users.map((item: AppUser) => (
                 <tr key={item.id}>
                   <td>
-                    <strong>{item.full_name}</strong>
-                    <br />
-                    <span className="muted">Email: {item.email ?? "-"}</span>
-                    <br />
-                    <span className="muted">Tel/WA: {item.phone ?? "-"}</span>
-                    <br />
-                    <span className="muted">TG: {item.telegram_username ?? "-"}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      {item.avatar_url ? (
+                        <img src={item.avatar_url} alt={item.full_name} style={{ width: "36px", height: "36px", borderRadius: "50%", objectFit: "cover", border: "1px solid rgba(255, 255, 255, 0.1)" }} />
+                      ) : (
+                        <div style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: "36px",
+                          height: "36px",
+                          borderRadius: "50%",
+                          background: "rgba(255, 255, 255, 0.08)",
+                          color: "#fff",
+                          fontWeight: "bold",
+                          fontSize: "0.9rem"
+                        }}>
+                          {item.full_name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)}
+                        </div>
+                      )}
+                      <div>
+                        <strong>{item.full_name}</strong>
+                        <br />
+                        <span className="muted">Email: {item.email ?? "-"}</span>
+                        <br />
+                        <span className="muted">Tel/WA: {item.phone ?? "-"}</span>
+                        <br />
+                        <span className="muted">TG: {item.telegram_username ?? "-"}</span>
+                      </div>
+                    </div>
                   </td>
                   <td>{item.role}</td>
                   <td><span className={item.active ? "badge ok" : "badge danger"}>{item.active ? "active" : "disabled"}</span></td>
@@ -86,6 +108,10 @@ export default async function Page() {
                         <div className="edit-field">
                           <label>{t("Имя", "Name")}</label>
                           <input name="full_name" defaultValue={item.full_name} required style={{ width: "160px" }} />
+                        </div>
+                        <div className="edit-field">
+                          <label>{t("Логин (Email)", "Login (Email)")}</label>
+                          <input name="email" type="email" defaultValue={item.email ?? ""} required style={{ width: "180px" }} />
                         </div>
                         <div className="edit-field">
                           <label>{t("Телефон", "Phone")}</label>
@@ -123,8 +149,15 @@ export default async function Page() {
                     <td>
                       <ActionFeedbackForm action={changeUserPasswordAction} className="filters" locale={locale} savingText={t("Меняю пароль...", "Changing password...")} fallbackError={t("Ошибка смены пароля", "Password change error")}>
                         <input type="hidden" name="user_id" value={item.id} />
-                        <input name="new_password" type="password" placeholder={t("Новый пароль", "New password")} minLength={6} style={{minWidth:"150px"}} />
-                        <button className="button">{t("Сменить", "Change")}</button>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                          <span style={{ fontSize: "11px", color: "#666", fontWeight: "500" }}>
+                            {item.email ?? "-"}
+                          </span>
+                          <div style={{ display: "flex", gap: "6px" }}>
+                            <input name="new_password" type="password" placeholder={t("Новый пароль", "New password")} minLength={6} style={{ minWidth: "150px" }} />
+                            <button className="button">{t("Сменить", "Change")}</button>
+                          </div>
+                        </div>
                       </ActionFeedbackForm>
                     </td>
                   ) : null}

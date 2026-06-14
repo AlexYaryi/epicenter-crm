@@ -12,23 +12,32 @@ type ActionFeedbackFormProps = {
   locale: Locale;
   savingText?: string;
   fallbackError?: string;
+  confirmText?: string;
+  redirectBasePath?: string;
 };
 
 function text(locale: Locale, ru: string, en: string) {
   return locale === "en" ? en : ru;
 }
 
-export function ActionFeedbackForm({ action, children, className, locale, savingText, fallbackError }: ActionFeedbackFormProps) {
+export function ActionFeedbackForm({ action, children, className, locale, savingText, fallbackError, confirmText, redirectBasePath }: ActionFeedbackFormProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [result, setResult] = useState<ActionResult | null>(null);
 
   function submit(formData: FormData) {
+    if (confirmText && !window.confirm(confirmText)) {
+      return;
+    }
     setResult({ ok: true, message: savingText ?? text(locale, "Сохраняю...", "Saving...") });
     startTransition(async () => {
       try {
         const response = await action(formData);
         setResult(response);
+        if (response.ok && redirectBasePath && response.id) {
+          router.push(`${redirectBasePath}/${response.id}`);
+          return;
+        }
         if (response.ok) router.refresh();
       } catch (error) {
         setResult({

@@ -16,23 +16,33 @@ function t(locale: Locale, ru: string, en: string) {
   return locale === "en" ? en : ru;
 }
 
+function normalizeSourceForSelect(source: string | null | undefined) {
+  if (source === "telegram") return "telegram_chat";
+  return source ?? "other";
+}
+
 const SOURCES = [
   { value: "whatsapp", label: "WhatsApp" },
-  { value: "telegram_chat", label: "Telegram Chat" },
+  { value: "telegram_chat", label: "Telegram" },
   { value: "telegram_channel", label: "Telegram Channel" },
   { value: "groupswatcher", label: "Groups Watcher" },
   { value: "instagram", label: "Instagram" },
   { value: "facebook", label: "Facebook" },
   { value: "google_ads", label: "Google Ads" },
+  { value: "tilda", label: "Tilda" },
   { value: "referral_marina", label: "Referral" },
   { value: "localrent", label: "LocalRent" },
   { value: "takecars", label: "TakeCars" },
+  { value: "booking_com", label: "Booking.com" },
+  { value: "line", label: "LINE" },
+  { value: "tiktok", label: "TikTok" },
   { value: "walk_in", label: "Walk-in" },
   { value: "other", label: "Другое / Other" }
 ];
 
 export function CustomerEditForm({ action, customer, locale }: Props) {
   const router = useRouter();
+  const sourceValue = normalizeSourceForSelect(customer.source);
   const [isSaving, setIsSaving] = useState(false);
   const [result, setResult] = useState<ActionResult | null>(null);
 
@@ -70,15 +80,15 @@ export function CustomerEditForm({ action, customer, locale }: Props) {
       </div>
       <div className="field">
         <label>{t(locale, "Источник", "Source")}</label>
-        <select name="source" defaultValue={customer.source ?? "other"}>
+        <select name="source" defaultValue={sourceValue}>
           {SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
         </select>
       </div>
       <div className="field wide"><label>{t(locale, "Источник подробнее", "Source detail")}</label><input name="source_detail" defaultValue={customer.source_detail ?? ""} /></div>
       <div className="field"><label>{t(locale, "Паспорт №", "Passport #")}</label><input name="passport_number" defaultValue={customer.passport_number ?? ""} /></div>
       <div className="field"><label>{t(locale, "Паспорт до", "Passport expires")}</label><input name="passport_expires" type="date" defaultValue={customer.passport_expires ?? ""} /></div>
-      <div className="field"><label>IDP №</label><input name="idp_number" defaultValue={customer.idp_number ?? ""} /></div>
-      <div className="field"><label>IDP {t(locale, "до", "expires")}</label><input name="idp_expires" type="date" defaultValue={customer.idp_expires ?? ""} /></div>
+      <div className="field"><label>{t(locale, "IDP / Тайские права №", "IDP / Thai license #")}</label><input name="idp_number" defaultValue={customer.idp_number ?? ""} /></div>
+      <div className="field"><label>{t(locale, "IDP / Тайские права до", "IDP / Thai license expires")}</label><input name="idp_expires" type="date" defaultValue={customer.idp_expires ?? ""} /></div>
 
       {result ? (
         <div className={`form-result wide ${result.ok ? "ok" : "error"}`}>{result.message}</div>

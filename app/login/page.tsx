@@ -26,8 +26,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <div className="panel-body">
           <form action={signInAction} className="form-grid">
             {params.error ? <div className="field wide"><span className="badge danger">{params.error}</span></div> : null}
-            <div className="field wide"><label>Email</label><input name="email" defaultValue="alexander@epicenter.phuket" /></div>
-            <div className="field wide"><label>{en ? "Password" : "Пароль"}</label><input name="password" type="password" defaultValue="demo-password" /></div>
+            <div className="field wide"><label>Email</label><input name="email" autoComplete="email" /></div>
+            <div className="field wide"><label>{en ? "Password" : "Пароль"}</label><input name="password" type="password" autoComplete="current-password" /></div>
             <button className="primary">{en ? "Log in to CRM" : "Войти в CRM"}</button>
           </form>
         </div>

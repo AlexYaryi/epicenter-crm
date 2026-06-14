@@ -27,3 +27,21 @@ tsconfig.tsbuildinfo
 # OS
 .DS_Store
 Thumbs.db
+
+# Puppeteer Profiles
+chrome/
+chrome_profile/
+chrome_profile_persistent/
+
+# Scratch & Logs
+scratch/
+log.txt
+
+# Local/generated artifacts
+old_actions.ts
+prev_actions.ts
+tilda_*.js
+tilda_*.png
+phuketcar_rent_*.png
+*.tgz
+*.tar.gz

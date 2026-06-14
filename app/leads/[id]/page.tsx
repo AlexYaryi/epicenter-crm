@@ -1,13 +1,15 @@
 import { notFound } from "next/navigation";
-import { bookingStatusBadge, getProtectedCrmPage, money, PageFrame, sourceLabel, statusBadge } from "@/app/components/CrmPages";
+import { bookingStatusBadge, getProtectedCrmPage, money, PageFrame, rentalStatusBadge, sourceLabel, statusBadge } from "@/app/components/CrmPages";
 import { BookingForm } from "@/app/components/BookingForm";
+import { BookingRowActions } from "@/app/components/BookingRowActions";
 import { CustomerConversation } from "@/app/components/CustomerConversation";
 import { LeadCustomerLinkForm } from "@/app/components/LeadCustomerLinkForm";
 import { LeadProgressForm } from "@/app/components/LeadProgressForm";
 import { MessageComposeForm } from "@/app/components/MessageComposeForm";
-import { createBookingAction, createCustomerFromLeadAction, sendCustomerMessageAction, sendLeadMessageAction, updateLeadStageAction } from "@/lib/actions";
+import { cancelBookingAction, createBookingAction, createCustomerFromLeadAction, deleteBookingAction, sendCustomerMessageAction, sendLeadMessageAction, updateLeadStageAction } from "@/lib/actions";
 import { leadStageLabel } from "@/lib/lead-stages";
 import { getCustomerMessages, getLeadMessages } from "@/lib/repository";
+import { formatDisplayDate } from "@/lib/i18n";
 
 function extractDatesFromText(text: string): { startDate?: string; endDate?: string } {
   if (!text) return {};
@@ -99,18 +101,33 @@ export default async function Page({ params }: PageParams) {
   const customer = lead.customer_id
     ? data.customers.find((item) => item.id === lead.customer_id)
     : data.customers.find((item) => {
-        if (leadDigits) {
-          const phoneDigits = normalizeDigits(item.whatsapp || item.phone);
-          return phoneDigits === leadDigits || phoneDigits.endsWith(leadDigits) || leadDigits.endsWith(phoneDigits);
-        }
-        return false;
+        if (!leadDigits) return false;
+        const phoneDigits = normalizeDigits(item.whatsapp || item.phone);
+        if (!phoneDigits) return false;
+        if (phoneDigits.length < 7 || leadDigits.length < 7) return false;
+        return phoneDigits === leadDigits || phoneDigits.endsWith(leadDigits) || leadDigits.endsWith(phoneDigits);
       });
-  const messages = customer
-    ? await getCustomerMessages(customer.id, user.tenantId)
-    : await getLeadMessages(lead.id, user.tenantId);
+  const leadMessages = await getLeadMessages(lead.id, user.tenantId);
+  const customerMessages = customer ? await getCustomerMessages(customer.id, user.tenantId) : [];
+  const messages = Array.from(
+    new Map([...leadMessages, ...customerMessages].map((message) => [message.id, message])).values()
+  ).sort((a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime());
   const leadContact = lead.phone || lead.telegram_username || lead.contact_handle || customer?.whatsapp || customer?.phone || customer?.telegram_username || "";
   const leadUsesTelegram = lead.channel.startsWith("telegram") || Boolean(lead.telegram_username);
   const leadUsesWhatsApp = lead.channel === "whatsapp" || Boolean(lead.phone) || (!leadUsesTelegram && Boolean(lead.contact_handle));
+
+  const hasLineMsg = messages.find(m => m.channel === "line");
+  const hasInstaMsg = messages.find(m => m.channel === "instagram");
+  const hasTiktokMsg = messages.find(m => m.channel === "tiktok");
+
+  const leadUsesLine = lead.channel === "line" || Boolean(hasLineMsg);
+  const leadUsesInstagram = lead.channel === "instagram" || Boolean(hasInstaMsg);
+  const leadUsesTiktok = lead.channel === "tiktok" || Boolean(hasTiktokMsg);
+
+  const lineHandle = customer ? (customer.source === "line" ? customer.source_detail : hasLineMsg?.contact_handle) : (lead.channel === "line" ? lead.contact_handle : hasLineMsg?.contact_handle);
+  const instagramHandle = customer ? (customer.source === "instagram" ? customer.source_detail : hasInstaMsg?.contact_handle) : (lead.channel === "instagram" ? lead.contact_handle : hasInstaMsg?.contact_handle);
+  const tiktokHandle = customer ? (customer.source === "tiktok" ? customer.source_detail : hasTiktokMsg?.contact_handle) : (lead.channel === "tiktok" ? lead.contact_handle : hasTiktokMsg?.contact_handle);
+
   const leadBookings = data.bookings.filter((booking) => booking.lead_id === lead.id || (customer ? booking.customer_id === customer.id : false));
   const canBook = Boolean(customer);
   const reminderText = lead.reminder_at
@@ -241,6 +258,7 @@ export default async function Page({ params }: PageParams) {
               tenantId={user.tenantId}
               leadId={lead.id}
               source={lead.channel}
+              customers={data.customers}
               defaultName={lead.customer_name}
               defaultPhone={lead.phone || (leadUsesWhatsApp ? lead.contact_handle : null)}
               defaultTelegram={lead.telegram_username || (leadUsesTelegram ? lead.contact_handle : null)}
@@ -263,7 +281,7 @@ export default async function Page({ params }: PageParams) {
             customerName={customer?.full_name ?? lead.customer_name}
             initialMessages={messages}
             locale={locale}
-            messageEndpoint={customer ? undefined : `/api/leads/${lead.id}/messages`}
+            messageEndpoint={`/api/leads/${lead.id}/messages`}
           />
         </div>
       </section>
@@ -287,14 +305,42 @@ export default async function Page({ params }: PageParams) {
             entityId={customer?.id ?? lead.id}
             recipientLabel={
               customer
-                ? customer.whatsapp || customer.phone || customer.telegram_username || ""
-                : leadContact || (locale === "en" ? "Latest inbound contact" : "Последний входящий контакт")
+                ? customer.whatsapp || customer.phone || customer.telegram_username || lineHandle || instagramHandle || tiktokHandle || ""
+                : leadContact || lineHandle || instagramHandle || tiktokHandle || (locale === "en" ? "Latest inbound contact" : "Последний входящий контакт")
             }
-            defaultChannel={customer ? (customer.whatsapp || customer.phone ? "whatsapp" : "telegram") : (leadUsesTelegram ? "telegram" : "whatsapp")}
+            defaultChannel={
+              customer
+                ? (customer.whatsapp || customer.phone
+                  ? "whatsapp"
+                  : customer.telegram_username
+                  ? "telegram"
+                  : lineHandle
+                  ? "line"
+                  : instagramHandle
+                  ? "instagram"
+                  : tiktokHandle
+                  ? "tiktok"
+                  : "whatsapp")
+                : (leadUsesTelegram
+                  ? "telegram"
+                  : leadUsesLine
+                  ? "line"
+                  : leadUsesInstagram
+                  ? "instagram"
+                  : leadUsesTiktok
+                  ? "tiktok"
+                  : "whatsapp")
+            }
             whatsappEnabled={customer ? Boolean(customer.whatsapp || customer.phone) : leadUsesWhatsApp}
-            telegramEnabled={customer ? Boolean(customer.telegram_username) : Boolean(lead.telegram_username || lead.contact_handle)}
+            telegramEnabled={customer ? Boolean(customer.telegram_username) : Boolean(lead.telegram_username || lead.contact_handle || lead.channel.startsWith("telegram"))}
+            lineEnabled={customer ? Boolean(lineHandle) : leadUsesLine}
+            instagramEnabled={customer ? Boolean(instagramHandle) : leadUsesInstagram}
+            tiktokEnabled={customer ? Boolean(tiktokHandle) : leadUsesTiktok}
             whatsappLabel={customer?.whatsapp || customer?.phone || lead.phone || ""}
             telegramLabel={customer?.telegram_username || lead.telegram_username || lead.contact_handle || ""}
+            lineLabel={lineHandle || ""}
+            instagramLabel={instagramHandle || ""}
+            tiktokLabel={tiktokHandle || ""}
             placeholder={locale === "en" ? "Write the next sales reply..." : "Напишите следующий ответ клиенту..."}
           />
         </div>
@@ -351,6 +397,7 @@ export default async function Page({ params }: PageParams) {
                 <th>{locale === "en" ? "Dates" : "Даты"}</th>
                 <th>{locale === "en" ? "Status" : "Статус"}</th>
                 <th>{locale === "en" ? "Total" : "Сумма"}</th>
+                <th>{locale === "en" ? "Actions" : "Действия"}</th>
               </tr>
             </thead>
             <tbody>
@@ -358,12 +405,27 @@ export default async function Page({ params }: PageParams) {
                 <tr key={booking.id}>
                   <td><a href={`/bookings/${booking.id}`}>{booking.booking_number}</a></td>
                   <td>{booking.vehicle_id ? <a href={`/fleet/${booking.vehicle_id}`}>{booking.vehicle}</a> : booking.vehicle}</td>
-                  <td>{booking.start_date} - {booking.end_date}</td>
-                  <td>{bookingStatusBadge(booking.status, locale)}</td>
+                  <td>{formatDisplayDate(booking.start_date)} - {formatDisplayDate(booking.end_date)}</td>
+                  <td>
+                    <span className="badge-row">
+                      {bookingStatusBadge(booking.status, locale)}
+                      {rentalStatusBadge(booking.rental_status, locale)}
+                    </span>
+                  </td>
                   <td>{money(booking.grand_total)}</td>
+                  <td>
+                    <BookingRowActions
+                      bookingId={booking.id}
+                      bookingStatus={booking.status}
+                      canDelete={["owner", "manager"].includes(user.role)}
+                      locale={locale}
+                      cancelAction={cancelBookingAction}
+                      deleteAction={deleteBookingAction}
+                    />
+                  </td>
                 </tr>
               ))}
-              {leadBookings.length === 0 ? <tr><td colSpan={5}>{locale === "en" ? "No bookings yet" : "Броней пока нет"}</td></tr> : null}
+              {leadBookings.length === 0 ? <tr><td colSpan={6}>{locale === "en" ? "No bookings yet" : "Броней пока нет"}</td></tr> : null}
             </tbody>
           </table>
         </div>

@@ -4,12 +4,12 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import type { ActionResult } from "@/lib/actions";
 import type { Locale } from "@/lib/i18n";
-import type { BookingStatus } from "@/lib/types";
+import type { BookingStatus, RentalStatus } from "@/lib/types";
 
 type BookingStatusButtonProps = {
   action: (formData: FormData) => ActionResult | Promise<ActionResult>;
   bookingId: string;
-  status: BookingStatus;
+  status: BookingStatus | RentalStatus;
   label: string;
   active?: boolean;
   locale: Locale;

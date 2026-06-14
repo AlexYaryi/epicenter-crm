@@ -7,6 +7,9 @@ type RouteParams = {
   params: Promise<{ id: string }>;
 };
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request, { params }: RouteParams) {
   if (!hasSupabaseEnv() || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
@@ -25,6 +28,23 @@ export async function POST(request: Request, { params }: RouteParams) {
   }
 
   const supabase = createServiceSupabaseClient();
+  const { data: vehicle, error: readError } = await supabase
+    .from("vehicles")
+    .select("photos")
+    .eq("id", id)
+    .eq("tenant_id", user.tenantId)
+    .maybeSingle();
+
+  if (readError || !vehicle) {
+    return NextResponse.json({ error: readError?.message ?? "Vehicle not found." }, { status: 404 });
+  }
+
+  await supabase.storage.updateBucket("vehicle-photos", {
+    public: true,
+    fileSizeLimit: "8MB",
+    allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"]
+  });
+
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = `${id}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
 
@@ -52,16 +72,6 @@ export async function POST(request: Request, { params }: RouteParams) {
 
   const { data: publicUrl } = supabase.storage.from("vehicle-photos").getPublicUrl(path);
   const url = publicUrl.publicUrl;
-  const { data: vehicle, error: readError } = await supabase
-    .from("vehicles")
-    .select("photos")
-    .eq("id", id)
-    .eq("tenant_id", user.tenantId)
-    .maybeSingle();
-
-  if (readError || !vehicle) {
-    return NextResponse.json({ error: readError?.message ?? "Vehicle not found." }, { status: 404 });
-  }
 
   const photos = Array.isArray(vehicle.photos) ? vehicle.photos : [];
   const { error } = await supabase
@@ -76,6 +86,7 @@ export async function POST(request: Request, { params }: RouteParams) {
   revalidatePath("/fleet");
   revalidatePath(`/fleet/${id}`);
   revalidatePath("/api/tilda/vehicles");
+  revalidatePath("/api/tilda/availability");
 
   return NextResponse.json({ url });
 }

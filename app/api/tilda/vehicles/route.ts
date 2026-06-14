@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { demoVehicles } from "@/lib/demo-data";
 import { createServiceSupabaseClient, hasSupabaseEnv } from "@/lib/supabase";
 
 export const revalidate = 60;
@@ -39,7 +38,10 @@ type PublicPriceRule = {
 function corsHeaders(request?: NextRequest) {
   const allowedOrigin = process.env.TILDA_ALLOWED_ORIGIN || "*";
   const requestOrigin = request?.headers.get("origin");
-  const origin = allowedOrigin === "*" ? "*" : requestOrigin === allowedOrigin ? allowedOrigin : allowedOrigin;
+  let origin = "*";
+  if (allowedOrigin !== "*") {
+    origin = requestOrigin === allowedOrigin ? requestOrigin : "null";
+  }
 
   return {
     "Access-Control-Allow-Origin": origin,
@@ -65,6 +67,23 @@ function normalizePhotos(value: unknown): string[] {
   }
   return [];
 }
+
+function overlapsRequestedRange(blockStart: string | null, blockEnd: string | null, requestStart: string, requestEnd: string) {
+  if (!blockStart || !blockEnd) return false;
+  return blockStart <= requestEnd && blockEnd >= requestStart;
+}
+
+function dateOnly(value: unknown) {
+  return String(value ?? "").slice(0, 10);
+}
+
+function complianceReason(vehicle: Record<string, unknown>, hasInsurance: boolean, endDate: string) {
+  return null;
+}
+
+const blockingBookingStatuses = ["confirmed", "paid_deposit", "handed_over", "active", "in_use", "returning"];
+const blockingRentalStatuses = new Set(["handed_over", "active", "in_use", "returning"]);
+const busyVehicleStatuses = new Set(["reserved", "handed_over", "in_use", "returning", "maintenance", "repair", "retired"]);
 
 function publicDescription(vehicle: Record<string, unknown>, lang: string) {
   const ru = vehicle.public_description_ru;
@@ -131,24 +150,19 @@ export async function GET(request: NextRequest) {
   const hasDateFilter = Boolean(startDate && endDate);
 
   if (!hasSupabaseEnv() || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    const demo = demoVehicles
-      .filter((vehicle) => includeUnavailable || !["retired", "repair"].includes(vehicle.status))
-      .filter((vehicle) => !category || category === "all" || vehicle.category === category)
-      .map((vehicle) => toPublicVehicle(vehicle as unknown as Record<string, unknown>, lang));
-
-    return NextResponse.json({ source: "demo", updated_at: new Date().toISOString(), vehicles: demo }, { headers: corsHeaders(request) });
+    return NextResponse.json({ error: "Supabase is not configured." }, { status: 503, headers: corsHeaders(request) });
   }
 
   const supabase = createServiceSupabaseClient();
   const publicSelect =
-    "id, license_plate, make, model, year, category, status, seats, transmission, daily_rate_long_term, monthly_rate, deposit_amount, photos, public_slug, public_visible, public_sort_order, public_description_ru, public_description_en";
-  const baseSelect = "id, license_plate, make, model, year, category, status, seats, transmission, daily_rate_long_term, monthly_rate, deposit_amount, photos";
+    "id, license_plate, make, model, year, category, status, seats, transmission, daily_rate_long_term, monthly_rate, deposit_amount, photos, public_slug, public_visible, public_sort_order, public_description_ru, public_description_en, road_tax_due_date, inspection_expires_at";
+  const baseSelect = "id, license_plate, make, model, year, category, status, seats, transmission, daily_rate_long_term, monthly_rate, deposit_amount, photos, road_tax_due_date, inspection_expires_at";
 
   const buildQuery = (select: string, withPublicSort: boolean) => {
     let query = supabase.from("vehicles").select(select);
 
     if (!includeUnavailable) {
-      query = query.not("status", "in", '("retired","repair")');
+      query = query.not("status", "in", '("reserved","handed_over","in_use","returning","maintenance","repair","retired")');
     }
 
     if (category && category !== "all") {
@@ -177,6 +191,7 @@ export async function GET(request: NextRequest) {
   const vehicleIds = rows.map((vehicle) => String(vehicle.id));
   const pricingByVehicle = new Map<string, PublicPriceRule[]>();
   const unavailableByVehicle = new Map<string, string>();
+  const insuredVehicleIds = new Set<string>();
 
   if (vehicleIds.length) {
     const { data: priceRows, error: priceError } = await supabase
@@ -206,29 +221,42 @@ export async function GET(request: NextRequest) {
   }
 
   if (hasDateFilter && vehicleIds.length) {
-    const blockingStatuses = ["confirmed", "paid_deposit", "handed_over", "active", "returning"];
-    const [{ data: bookingBlocks }, { data: maintenanceBlocks }] = await Promise.all([
+    const [{ data: bookingBlocks }, { data: maintenanceBlocks }, { data: insuranceBlocks }] = await Promise.all([
       supabase
         .from("bookings")
-        .select("vehicle_id, booking_number, status")
+        .select("vehicle_id, booking_number, status, rental_status, start_date, end_date, actual_end")
         .in("vehicle_id", vehicleIds)
-        .in("status", blockingStatuses)
-        .lte("start_date", endDate)
-        .gte("end_date", startDate),
+        .lte("start_date", endDate),
       supabase
         .from("maintenance_log")
         .select("vehicle_id, type, status")
         .in("vehicle_id", vehicleIds)
         .in("status", ["scheduled", "in_progress"])
         .lte("vehicle_unavailable_from", endDate)
-        .gte("vehicle_unavailable_to", startDate)
+        .or(`vehicle_unavailable_to.gte.${startDate},vehicle_unavailable_to.is.null`),
+      supabase
+        .from("insurance")
+        .select("vehicle_id")
+        .in("vehicle_id", vehicleIds)
+        .lte("start_date", startDate)
+        .gte("end_date", endDate)
     ]);
 
     for (const booking of bookingBlocks ?? []) {
-      unavailableByVehicle.set(String(booking.vehicle_id), `booking:${booking.booking_number ?? booking.status}`);
+      const blocksByRentalStatus = blockingRentalStatuses.has(String(booking.rental_status ?? ""));
+      const blocksByBookingStatus = blockingBookingStatuses.includes(String(booking.status ?? ""));
+      if (!blocksByRentalStatus && !blocksByBookingStatus) continue;
+
+      const effectiveEndDate = String(booking.actual_end ?? booking.end_date ?? "").slice(0, 10);
+      if (overlapsRequestedRange(String(booking.start_date ?? "").slice(0, 10), effectiveEndDate, String(startDate), String(endDate))) {
+        unavailableByVehicle.set(String(booking.vehicle_id), `booking:${booking.booking_number ?? booking.status}`);
+      }
     }
     for (const maintenance of maintenanceBlocks ?? []) {
       unavailableByVehicle.set(String(maintenance.vehicle_id), `maintenance:${maintenance.type ?? maintenance.status}`);
+    }
+    for (const policy of insuranceBlocks ?? []) {
+      insuredVehicleIds.add(String(policy.vehicle_id));
     }
   }
 
@@ -236,7 +264,10 @@ export async function GET(request: NextRequest) {
     .filter((vehicle) => vehicle.public_visible !== false)
     .map((vehicle) => {
       const vehicleId = String(vehicle.id);
-      const reason = unavailableByVehicle.get(vehicleId) ?? null;
+      const reason =
+        unavailableByVehicle.get(vehicleId) ??
+        (hasDateFilter ? complianceReason(vehicle, insuredVehicleIds.has(vehicleId), String(endDate)) : null) ??
+        (busyVehicleStatuses.has(String(vehicle.status ?? "")) ? `status:${vehicle.status}` : null);
       return toPublicVehicle(vehicle, lang, pricingByVehicle.get(vehicleId) ?? [], hasDateFilter ? { available: !reason, reason } : undefined);
     })
     .filter((vehicle) => !hasDateFilter || includeUnavailable || vehicle.available_for_dates !== false);

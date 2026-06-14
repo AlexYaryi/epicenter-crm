@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "test:payment-status": "node scripts/payment-status-regression.js",
+    "typecheck": "next typegen && tsc --noEmit",
+    "preflight": "npm run typecheck && npm run build",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "next lint"
@@ -15,6 +18,7 @@
     "pdf-lib": "^1.17.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "xlsx": "^0.18.5",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -24,6 +28,7 @@
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.5",
+    "puppeteer": "^25.1.0",
     "typescript": "^5.7.2"
   },
   "overrides": {

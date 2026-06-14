@@ -57,6 +57,24 @@ button {
   gap: 18px;
   background: linear-gradient(180deg, #075b63, #043f46);
   color: white;
+  overflow-y: auto;
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .brand {
@@ -112,6 +130,7 @@ button {
 
 .main {
   min-width: 0;
+  overflow-x: hidden;
 }
 
 .topbar {
@@ -188,7 +207,11 @@ h1 {
 .content {
   padding: 24px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .kpis,
@@ -347,23 +370,56 @@ th {
   font-size: 12px;
 }
 
-.kanban {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(280px, 320px);
-  grid-template-columns: none;
-  gap: 12px;
-  overflow-x: auto;
-  overflow-y: visible;
-  align-items: start;
-  padding-bottom: 8px;
+.kanban-wrapper {
+  width: 100%;
   max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  padding-bottom: 10px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(22, 184, 189, 0.4) transparent;
+}
+
+/* Custom premium scrollbar styling on the wrapper instead of the inner list */
+.kanban-wrapper::-webkit-scrollbar {
+  height: 8px;
+}
+
+.kanban-wrapper::-webkit-scrollbar-track {
+  background: rgba(22, 184, 189, 0.05);
+  border-radius: 999px;
+}
+
+.kanban-wrapper::-webkit-scrollbar-thumb {
+  background: rgba(22, 184, 189, 0.3);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
+}
+
+.kanban-wrapper::-webkit-scrollbar-thumb:hover {
+  background: rgba(22, 184, 189, 0.55);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.kanban {
+  display: flex;
+  gap: 16px;
+  align-items: start;
+  width: max-content;
+  min-width: 100%;
+  padding-bottom: 16px;
 }
 
 .col {
+  flex: 0 0 310px;
+  min-width: 310px;
+  max-width: 310px;
   min-height: 320px;
-  min-width: 0;
-  max-width: 100%;
   padding: 10px;
   background: #e5f5f6;
   border: 1px solid var(--line);
@@ -375,7 +431,9 @@ th {
 .col > p {
   display: block;
   max-width: 100%;
+  min-width: 0;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .col > p {
@@ -394,10 +452,30 @@ th {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  contain: inline-size;
 }
 
 .task > * {
   min-width: 0;
+}
+
+.task a,
+.task span,
+.task strong,
+.lead-note {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.lead-note {
+  display: block;
+  white-space: normal;
+}
+
+.task .muted {
+  display: block;
 }
 
 .booking-strip {
@@ -419,9 +497,18 @@ th {
   box-shadow: 0 10px 26px rgba(6, 79, 88, .08);
 }
 
-.booking-chip-card:hover {
+.booking-chip-card:hover,
+.booking-chip-card:focus-within {
   border-color: var(--sun);
   box-shadow: 0 14px 34px rgba(6, 79, 88, .14);
+}
+
+.booking-chip-link {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
 }
 
 .booking-chip-card strong,
@@ -438,6 +525,30 @@ th {
 .booking-chip-card small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.compact-history {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.compact-history h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.history-card {
+  background: #f7ffff;
 }
 
 .inline-action {
@@ -476,16 +587,25 @@ th {
   gap: 8px;
 }
 
-.lead-card-head a:first-child {
+.lead-card-main {
+  display: grid;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.lead-card-main:hover .lead-card-head strong {
+  color: var(--aqua-dark);
+  text-decoration: underline;
+}
+
+.lead-card-head strong {
   min-width: 0;
   color: var(--ink);
   text-decoration: none;
   overflow-wrap: anywhere;
-}
-
-.lead-card-head a:first-child:hover {
-  color: var(--aqua-dark);
-  text-decoration: underline;
 }
 
 .lead-open-button {
@@ -504,8 +624,9 @@ th {
 .lead-card-form {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  max-width: 100%;
 }
 
 .lead-card-form .field,
@@ -529,13 +650,19 @@ th {
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
+  text-overflow: ellipsis;
 }
 
 .lead-card-form input[type="datetime-local"] {
-  font-size: 12px;
+  font-size: 11px;
   padding-left: 8px;
-  padding-right: 6px;
+  padding-right: 4px;
   letter-spacing: 0;
+  appearance: none;
+  box-sizing: border-box;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: nowrap;
 }
 
 .lead-card-form .button {
@@ -545,6 +672,67 @@ th {
 .lead-card-form .form-result {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.lead-kanban-card .lead-card-form {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.lead-kanban-card .lead-card-form label {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.lead-kanban-card .lead-card-form input,
+.lead-kanban-card .lead-card-form select {
+  min-height: 42px;
+}
+
+.lead-kanban-card .lead-card-form input[type="datetime-local"]::-webkit-datetime-edit {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lead-kanban-card .lead-card-form input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  margin-left: 0;
+  padding: 0;
+}
+
+.lead-kanban-card {
+  overflow: hidden;
+}
+
+.lead-card-main {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.lead-archive-panel {
+  margin-top: 16px;
+}
+
+.lead-archive-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.lead-archive-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7ffff;
+  color: var(--text);
+  text-decoration: none;
+  overflow: hidden;
+}
+
+.lead-archive-card:hover {
+  border-color: var(--aqua);
 }
 
 .form-grid {
@@ -589,6 +777,47 @@ th {
   font-weight: 900;
   color: var(--ink);
   overflow-wrap: anywhere;
+}
+
+.error-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--mint);
+}
+
+.error-card {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 20px 50px rgba(6, 79, 88, .12);
+}
+
+.error-logo {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+}
+
+.error-card h1,
+.error-card p {
+  margin: 0;
+}
+
+.error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.error-card small {
+  color: var(--muted);
 }
 
 .lead-kpi-text {
@@ -661,6 +890,29 @@ th {
   grid-column: 1 / -1;
 }
 
+.checkbox-line {
+  display: flex;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f6ffff;
+  cursor: pointer;
+}
+
+.checkbox-line input {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  margin-top: 2px;
+}
+
+.inline-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .field label {
   font-size: 13px;
   font-weight: 850;
@@ -682,6 +934,19 @@ th {
 .field textarea {
   min-height: 88px;
   padding-top: 10px;
+}
+
+.readonly-field {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5fbfb;
+  color: var(--ink);
+  font-weight: 750;
 }
 
 .checkbox-field {
@@ -753,6 +1018,52 @@ th {
   font-size: 13px;
 }
 
+.status-stack {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.booking-number-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.booking-number-cell a {
+  font-weight: 950;
+}
+
+.inline-details {
+  display: inline-flex;
+  align-items: center;
+}
+
+.inline-details summary {
+  cursor: pointer;
+  color: #8a1d1d;
+  font-weight: 800;
+  list-style: none;
+}
+
+.inline-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.inline-details[open] {
+  width: min(260px, 100%);
+}
+
+.inline-details input {
+  min-height: 32px;
+  max-width: 120px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
 .upload-inline {
   display: flex;
   align-items: center;
@@ -795,23 +1106,47 @@ th {
 }
 
 .fleet-thumb {
-  width: 86px;
+  width: 140px;
   aspect-ratio: 4 / 3;
   display: grid;
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #e5f5f6;
+  background: #ffffff;
   color: var(--muted);
   font-size: 11px;
   text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.fleet-thumb:hover {
+  transform: scale(1.05);
+  box-shadow: 0 8px 24px rgba(6, 79, 88, 0.18);
+  border-color: var(--aqua);
 }
 
 .fleet-thumb img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  transition: transform 0.25s ease;
+}
+
+.fleet-thumb:hover img {
+  transform: scale(1.02);
+}
+
+@keyframes fleetFadeIn {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(8px);
+  }
 }
 
 .fleet-car-title {
@@ -895,6 +1230,12 @@ th {
   color: var(--ok);
 }
 
+.save-notice.error {
+  border-color: rgba(201, 68, 62, .45);
+  background: #fff5f5;
+  color: var(--danger);
+}
+
 .global-save-toast {
   position: fixed;
   right: 18px;
@@ -935,6 +1276,11 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.upload-preview.error span {
+  color: var(--danger);
+  white-space: normal;
 }
 
 .upload-preview.done {
@@ -1352,18 +1698,18 @@ th {
 }
 
 .chat-thread {
-  max-height: 560px;
+  height: 100%;
   overflow-y: auto;
-  display: grid;
-  gap: 10px;
-  padding: 4px;
-  background: linear-gradient(180deg, #f7ffff, #eefafa);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  background: transparent;
 }
 
 .chat-message {
   display: flex;
+  width: 100%;
 }
 
 .chat-message.inbound {
@@ -1375,17 +1721,27 @@ th {
 }
 
 .chat-bubble {
-  width: min(720px, 86%);
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
-  box-shadow: 0 8px 24px rgba(6, 79, 88, .08);
+  width: auto;
+  max-width: 82%;
+  padding: 10px 14px;
+  box-shadow: 0 2px 8px rgba(6, 79, 88, 0.03);
+  font-size: 14px;
+  line-height: 1.45;
+  transition: transform 0.2s ease;
+}
+
+.chat-message.inbound .chat-bubble {
+  background: #ffffff;
+  border: 1px solid #e1e9e9;
+  border-radius: 18px 18px 18px 4px;
+  color: var(--ink);
 }
 
 .chat-message.outbound .chat-bubble {
-  background: #fff7c7;
-  border-color: rgba(255, 217, 35, .7);
+  background: #fff8cc;
+  border: 1px solid rgba(255, 217, 35, 0.45);
+  border-radius: 18px 18px 4px 18px;
+  color: #3b3300;
 }
 
 .chat-meta {
@@ -1505,6 +1861,30 @@ th {
   color: var(--ink);
 }
 
+.message-health {
+  margin: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #edfdf8;
+}
+
+.message-health.warn {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.message-health strong,
+.message-health span {
+  display: block;
+}
+
+.message-health span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .message-center-list {
   max-height: 310px;
   overflow-y: auto;
@@ -1612,10 +1992,20 @@ th {
   .nav {
     display: flex;
     overflow-x: auto;
+    gap: 8px;
+    padding: 8px 0;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
   }
 
   .nav a {
     white-space: nowrap;
+    padding: 8px 12px;
+    font-size: 13px;
   }
 
   .role-card {
@@ -1664,8 +2054,58 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .form-grid {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .form-grid .field,
+  .form-grid .field.wide,
+  .form-grid .field-pair,
+  .form-grid .field-pair.wide,
+  .form-grid .form-result,
+  .form-grid .form-result.wide {
+    grid-column: 1 / -1 !important;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .form-grid .field > div[style*="display: flex"],
+  .form-grid .field-pair div[style*="display: flex"] {
+    flex-direction: column !important;
+    width: 100%;
+  }
+
+  .form-grid input,
+  .form-grid select,
+  .form-grid textarea,
+  .form-grid button,
+  .readonly-box {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .form-result {
+    align-items: flex-start;
+    justify-content: flex-start;
+    overflow-wrap: anywhere;
+  }
+
   .kanban {
-    grid-template-columns: repeat(8, 82vw);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .kanban .col {
+    flex: 0 0 82vw;
+    min-width: 82vw;
+    max-width: 82vw;
   }
 
   .upload.video {
@@ -1698,6 +2138,17 @@ th {
 
   .chat-bubble {
     width: 94%;
+  }
+
+  table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  input, select, textarea {
+    font-size: 16px !important;
   }
 }
 

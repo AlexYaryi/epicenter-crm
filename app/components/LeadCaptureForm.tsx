@@ -51,14 +51,18 @@ export function LeadCaptureForm({ action, tenantId, locale }: LeadCaptureFormPro
         <label>{text(locale, "Источник", "Source")}</label>
         <select name="source">
           <option value="whatsapp">WhatsApp</option>
-          <option value="telegram_chat">{text(locale, "Telegram Чат", "Telegram Chat")}</option>
+          <option value="telegram_chat">Telegram</option>
           <option value="telegram_channel">{text(locale, "Telegram Канал", "Telegram Channel")}</option>
           <option value="groupswatcher">Groups Watcher</option>
           <option value="instagram">Instagram</option>
           <option value="facebook">Facebook</option>
           <option value="google_ads">Google Ads</option>
+          <option value="tilda">Tilda</option>
           <option value="localrent">LocalRent</option>
           <option value="takecars">TakeCars</option>
+          <option value="booking_com">Booking.com</option>
+          <option value="line">LINE</option>
+          <option value="tiktok">TikTok</option>
           <option value="other">{text(locale, "Другое", "Other")}</option>
         </select>
       </div>

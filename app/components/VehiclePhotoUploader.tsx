@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Locale } from "@/lib/i18n";
 
@@ -8,7 +8,7 @@ type Preview = {
   id: string;
   name: string;
   src: string;
-  status: "ready" | "uploading" | "done" | "error";
+  status: "ready" | "optimizing" | "uploading" | "done" | "error";
   progress: number;
   error?: string;
 };
@@ -61,11 +61,17 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
   const [previews, setPreviews] = useState<Preview[]>([]);
   const [uploaded, setUploaded] = useState(0);
   const [uploadTotal, setUploadTotal] = useState(0);
+  const [currentUploadPercent, setCurrentUploadPercent] = useState(0);
   const [message, setMessage] = useState("");
+  const [messageKind, setMessageKind] = useState<"ok" | "error">("ok");
   const [isUploading, setIsUploading] = useState(false);
   const [isPending, startTransition] = useTransition();
   const total = uploadTotal || files.length;
-  const progress = useMemo(() => (total ? Math.round((uploaded / total) * 100) : 0), [total, uploaded]);
+  const progress = useMemo(() => {
+    if (!total) return 0;
+    const currentFraction = Math.min(99, Math.max(0, currentUploadPercent)) / 100;
+    return Math.min(100, Math.round(((uploaded + currentFraction) / total) * 100));
+  }, [total, uploaded, currentUploadPercent]);
 
   function previewFromFile(file: File): Preview {
     return {
@@ -77,11 +83,24 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
     };
   }
 
+  useEffect(() => {
+    return () => {
+      previews.forEach((preview) => {
+        if (preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
+      });
+    };
+  }, [previews]);
+
   function onSelect(selected: FileList | null) {
     const next = Array.from(selected ?? []).filter((file) => file.type.startsWith("image/"));
+    previews.forEach((preview) => {
+      if (preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
+    });
     setFiles(next);
     setUploaded(0);
+    setCurrentUploadPercent(0);
     setUploadTotal(next.length);
+    setMessageKind("ok");
     setMessage(next.length
       ? locale === "en" ? `${next.length} photos selected. Press upload.` : `Выбрано ${next.length} фото. Нажмите загрузить.`
       : "");
@@ -98,6 +117,7 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
       request.upload.onprogress = (event) => {
         if (!event.lengthComputable) return;
         const percent = Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100)));
+        setCurrentUploadPercent(percent);
         setPreviews((items) =>
           items.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "uploading", progress: percent } : item))
         );
@@ -123,6 +143,7 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
   async function upload() {
     const selectedFiles = files.length ? files : Array.from(inputRef.current?.files ?? []).filter((file) => file.type.startsWith("image/"));
     if (!selectedFiles.length) {
+      setMessageKind("error");
       setMessage(locale === "en" ? "Choose photos first." : "Сначала выберите фотографии.");
       return;
     }
@@ -130,13 +151,18 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
       setFiles(selectedFiles);
       setPreviews(selectedFiles.map(previewFromFile));
     }
+    if (inputRef.current?.files?.length && !files.length) {
+      setMessage(locale === "en" ? `${selectedFiles.length} photos selected. Starting upload...` : `Выбрано ${selectedFiles.length} фото. Начинаю загрузку...`);
+    }
     setUploaded(0);
+    setCurrentUploadPercent(0);
     setUploadTotal(selectedFiles.length);
     setIsUploading(true);
+    setMessageKind("ok");
     setMessage(locale === "en" ? "Preparing and optimizing photos..." : "Подготавливаю и оптимизирую фотографии...");
     let done = 0;
     for (let index = 0; index < selectedFiles.length; index += 1) {
-      setPreviews((items) => items.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "uploading", progress: 1 } : item)));
+      setPreviews((items) => items.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "optimizing", progress: 1 } : item)));
       try {
         let optimized = selectedFiles[index];
         try {
@@ -147,9 +173,12 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
             throw new Error(locale === "en" ? "Unsupported image format. Use JPG, PNG or WebP." : "Неподдерживаемый формат фото. Используйте JPG, PNG или WebP.");
           }
         }
+        setPreviews((items) => items.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "uploading", progress: 5 } : item)));
+        setCurrentUploadPercent(5);
         const url = await uploadPhoto(optimized, index);
         done += 1;
         setUploaded(done);
+        setCurrentUploadPercent(0);
         setMessage(locale === "en" ? `Uploaded ${done} of ${selectedFiles.length}` : `Загружено ${done} из ${selectedFiles.length}`);
         setPreviews((items) =>
           items.map((item, itemIndex) => (itemIndex === index ? { ...item, src: url, status: "done", progress: 100 } : item))
@@ -157,24 +186,32 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
       } catch (error) {
         console.error(error);
         const errorMessage = error instanceof Error ? error.message : "Upload error";
+        setCurrentUploadPercent(0);
         setPreviews((items) => items.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "error", error: errorMessage } : item)));
+        setMessageKind("error");
         setMessage(locale === "en" ? `Some photos were not uploaded: ${errorMessage}` : `Часть фото не загрузилась: ${errorMessage}`);
       }
     }
     setIsUploading(false);
+    setMessageKind(done === selectedFiles.length ? "ok" : "error");
     setMessage(done === selectedFiles.length
       ? locale === "en" ? "All photos uploaded and saved. Refreshing card..." : "Все фотографии загружены и сохранены. Обновляю карточку..."
       : locale === "en" ? `Uploaded ${done} of ${selectedFiles.length}. Check failed photos.` : `Загружено ${done} из ${selectedFiles.length}. Проверьте фото с ошибкой.`
     );
-    startTransition(() => router.refresh());
+    startTransition(() => {
+      router.refresh();
+      window.setTimeout(() => router.refresh(), 900);
+    });
   }
 
   return (
     <div className="smart-upload">
       <div className="upload-inline">
-        <input ref={inputRef} name="files" type="file" accept="image/*" multiple onInput={(event) => onSelect(event.currentTarget.files)} onChange={(event) => onSelect(event.target.files)} />
-        <button className="primary" type="button" onClick={upload} disabled={isUploading}>
-          {locale === "en" ? "Upload selected photos" : "Загрузить выбранные фотографии"}
+        <input ref={inputRef} name="files" type="file" accept="image/*" multiple onChange={(event) => onSelect(event.target.files)} />
+        <button className="primary" type="button" onClick={(event) => { event.preventDefault(); void upload(); }} disabled={isUploading || !total}>
+          {isUploading
+            ? locale === "en" ? "Uploading photos..." : "Загружаю фотографии..."
+            : locale === "en" ? "Upload selected photos" : "Загрузить выбранные фотографии"}
         </button>
       </div>
       {files.length ? <div className="muted">{locale === "en" ? "Selected photos" : "Выбрано фотографий"}: {files.length}</div> : null}
@@ -189,14 +226,14 @@ export function VehiclePhotoUploader({ vehicleId, locale }: { vehicleId: string;
           <div className="upload-progress-track"><span style={{ width: `${progress}%` }} /></div>
         </>
       ) : null}
-      {message ? <div className="save-notice ok">{message}{isPending ? "..." : ""}</div> : null}
+      {message ? <div className={`save-notice ${messageKind}`}>{message}{isPending ? "..." : ""}</div> : null}
       {previews.length ? (
         <div className="vehicle-photo-grid upload-preview-grid">
           {previews.map((preview) => (
             <div className={`vehicle-photo-card upload-preview ${preview.status}`} key={preview.id}>
               <img src={preview.src} alt={preview.name} />
-              <span>{preview.status === "done" ? (locale === "en" ? "Uploaded" : "Загружено") : preview.status === "error" ? `${locale === "en" ? "Error" : "Ошибка"}: ${preview.error ?? ""}` : preview.status === "uploading" ? `${locale === "en" ? "Uploading" : "Загрузка"} ${preview.progress}%` : preview.name}</span>
-              {preview.status === "uploading" ? <div className="upload-card-progress"><span style={{ width: `${preview.progress}%` }} /></div> : null}
+              <span>{preview.status === "done" ? (locale === "en" ? "Uploaded" : "Загружено") : preview.status === "error" ? `${locale === "en" ? "Error" : "Ошибка"}: ${preview.error ?? ""}` : preview.status === "optimizing" ? (locale === "en" ? "Optimizing photo..." : "Оптимизирую фото...") : preview.status === "uploading" ? `${locale === "en" ? "Uploading" : "Загрузка"} ${preview.progress}%` : preview.name}</span>
+              {preview.status === "uploading" || preview.status === "optimizing" ? <div className="upload-card-progress"><span style={{ width: `${preview.progress}%` }} /></div> : null}
             </div>
           ))}
         </div>

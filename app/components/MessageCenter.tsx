@@ -6,12 +6,18 @@ import type { Locale } from "@/lib/i18n";
 type RecentMessage = {
   id: string;
   customer_id: string | null;
+  lead_id?: string | null;
   customer_name?: string | null;
   channel: string;
   sender_name?: string | null;
   contact_handle?: string | null;
   message_text: string;
   occurred_at: string;
+};
+
+type MessageIntegrationHealth = {
+  inbound_24h_count: number;
+  unlinked_count: number;
 };
 
 const LAST_SEEN_KEY = "epicenter_messages_last_seen_at";
@@ -45,6 +51,7 @@ function playNotificationTone(audioContextRef: React.MutableRefObject<AudioConte
 
 export function MessageCenter({ locale }: { locale: Locale }) {
   const [messages, setMessages] = useState<RecentMessage[]>([]);
+  const [health, setHealth] = useState<MessageIntegrationHealth | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const [lastSeenAt, setLastSeenAt] = useState<string | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(false);
@@ -73,12 +80,18 @@ export function MessageCenter({ locale }: { locale: Locale }) {
       try {
         const response = await fetch(`/api/messages/recent${since ? `?since=${encodeURIComponent(since)}` : ""}`, { cache: "no-store" });
         if (!response.ok) return;
-        const payload = (await response.json()) as { data?: RecentMessage[]; unread_count?: number; latest_at?: string | null };
+        const payload = (await response.json()) as {
+          data?: RecentMessage[];
+          unread_count?: number;
+          latest_at?: string | null;
+          integration_health?: MessageIntegrationHealth;
+        };
         if (cancelled) return;
 
         const nextMessages = payload.data || [];
         const previousLatestId = latestMessageIdRef.current;
         setMessages(nextMessages);
+        setHealth(payload.integration_health ?? null);
         latestMessageIdRef.current = nextMessages[0]?.id ?? null;
 
         if (!initializedRef.current) {
@@ -165,6 +178,12 @@ export function MessageCenter({ locale }: { locale: Locale }) {
     playNotificationTone(audioContextRef);
   }
 
+  function messageHref(message: RecentMessage) {
+    if (message.customer_id) return `/customers/${message.customer_id}`;
+    if (message.lead_id) return `/leads/${message.lead_id}`;
+    return "/customers";
+  }
+
   return (
     <>
       <div ref={rootRef} className="message-center-root" onMouseEnter={cancelScheduledClose} onMouseLeave={scheduleClose}>
@@ -188,9 +207,19 @@ export function MessageCenter({ locale }: { locale: Locale }) {
                 {locale === "en" ? "Enable sound alerts" : "Включить звук уведомлений"}
               </button>
             ) : null}
+            {health ? (
+              <div className={`message-health ${health.unlinked_count ? "warn" : "ok"}`}>
+                <strong>{locale === "en" ? "Integration health" : "Здоровье интеграций"}</strong>
+                <span>
+                  {locale === "en"
+                    ? `${health.inbound_24h_count} inbound in 24h · ${health.unlinked_count} unlinked`
+                    : `${health.inbound_24h_count} входящих за 24ч · ${health.unlinked_count} без привязки`}
+                </span>
+              </div>
+            ) : null}
             <div className="message-center-list">
               {messages.map((message) => (
-                <a key={message.id} href={message.customer_id ? `/customers/${message.customer_id}` : "/customers"} onClick={markRead}>
+                <a key={message.id} href={messageHref(message)} onClick={markRead}>
                   <strong>{message.customer_name || message.sender_name || message.contact_handle || "WhatsApp"}</strong>
                   <span>{message.channel} · {formatTime(message.occurred_at, locale)}</span>
                   <p>{message.message_text}</p>
@@ -203,7 +232,7 @@ export function MessageCenter({ locale }: { locale: Locale }) {
         ) : null}
       </div>
       {toast ? (
-        <a className="message-toast" href={toast.customer_id ? `/customers/${toast.customer_id}` : "/customers"} onClick={markRead}>
+        <a className="message-toast" href={messageHref(toast)} onClick={markRead}>
           <strong>{locale === "en" ? "New message" : "Новое сообщение"}</strong>
           <span>{toast.customer_name || toast.sender_name || toast.contact_handle}</span>
           <p>{toast.message_text}</p>

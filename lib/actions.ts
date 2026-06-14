@@ -7,6 +7,7 @@ import { z } from "zod";
 import { getCurrentUserContext } from "./repository";
 import { createServiceSupabaseClient, hasSupabaseEnv } from "./supabase";
 import { recalculateCustomerBookingStats } from "./customer-metrics";
+import { calculateBookingFinancialStatus, calculateRentalPaymentCoverage } from "./payment-status";
 import type { Role } from "./types";
 
 function requireSupabase() {
@@ -56,6 +57,32 @@ function hasValidDrivingPermit(idpNumber: string | null | undefined, idpExpires:
   return !Number.isNaN(expiresUtc) && expiresUtc >= todayUtc;
 }
 
+function hasMediaItems(value: unknown) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function hasChecklistVideos(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  const videos = (value as { videos?: unknown }).videos;
+  return Array.isArray(videos) && videos.length > 0;
+}
+
+function dateOnly(value: unknown) {
+  return String(value ?? "").slice(0, 10);
+}
+
+async function validateVehicleComplianceForBooking(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  tenantId: string,
+  vehicleId: string,
+  startDate: string,
+  endDate: string,
+  role: Role,
+  vehicleLabel = "Автомобиль"
+) {
+  return null;
+}
+
 function revalidatePublicVehicleApis() {
   revalidatePath("/api/tilda/vehicles");
   revalidatePath("/api/tilda/availability");
@@ -65,6 +92,85 @@ function cleanPhone(value: string | null | undefined): string | null {
   if (!value) return null;
   const cleaned = value.trim().replace(/[^\d+]/g, "");
   return cleaned || null;
+}
+
+async function findDuplicateCustomerMessage(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  tenantId: string,
+  input: { phone?: string | null; whatsapp?: string | null; telegram_username?: string | null; passport_number?: string | null },
+  excludeCustomerId?: string
+) {
+  const baseSelect = "id, full_name, phone, whatsapp, telegram_username, passport_number";
+  const seen = new Set<string>();
+  const checks: Array<{ key: string; label: string; run: () => Promise<{ data: any[] | null; error: { message: string } | null }> }> = [];
+  const addPhoneCheck = (value: string | null, label: string) => {
+    if (!value || seen.has(`phone:${value}`)) return;
+    seen.add(`phone:${value}`);
+    checks.push({
+      key: value,
+      label,
+      run: async () => {
+        let query = supabase
+          .from("customers")
+          .select(baseSelect)
+          .eq("tenant_id", tenantId)
+          .or(`phone.eq.${value},whatsapp.eq.${value}`)
+          .limit(1);
+        if (excludeCustomerId) query = query.neq("id", excludeCustomerId);
+        return query;
+      }
+    });
+  };
+
+  addPhoneCheck(cleanPhone(input.phone), "телефоном");
+  addPhoneCheck(cleanPhone(input.whatsapp), "WhatsApp");
+
+  const telegram = input.telegram_username?.trim();
+  if (telegram) {
+    checks.push({
+      key: telegram,
+      label: "Telegram",
+      run: async () => {
+        let query = supabase
+          .from("customers")
+          .select(baseSelect)
+          .eq("tenant_id", tenantId)
+          .eq("telegram_username", telegram)
+          .limit(1);
+        if (excludeCustomerId) query = query.neq("id", excludeCustomerId);
+        return query;
+      }
+    });
+  }
+
+  const passport = input.passport_number?.trim();
+  if (passport) {
+    checks.push({
+      key: passport,
+      label: "паспортом",
+      run: async () => {
+        let query = supabase
+          .from("customers")
+          .select(baseSelect)
+          .eq("tenant_id", tenantId)
+          .eq("passport_number", passport)
+          .limit(1);
+        if (excludeCustomerId) query = query.neq("id", excludeCustomerId);
+        return query;
+      }
+    });
+  }
+
+  for (const check of checks) {
+    const { data, error } = await check.run();
+    if (error) return `Не удалось проверить дубли клиента: ${error.message}`;
+    const duplicate = data?.[0];
+    if (duplicate) {
+      return `Клиент с таким ${check.label} уже есть: ${duplicate.full_name ?? duplicate.id}. Откройте существующую карточку или объедините клиентов.`;
+    }
+  }
+
+  return null;
 }
 
 const dbSourceValues = new Set([
@@ -187,6 +293,8 @@ export async function createCustomerAction(formData: FormData): Promise<ActionRe
   const passportExpires = normalizeDateInput(input.passport_expires);
   const idpExpires = normalizeDateInput(input.idp_expires);
   const hasValidIdp = hasValidDrivingPermit(input.idp_number, idpExpires);
+  const duplicateMessage = await findDuplicateCustomerMessage(supabase, user.tenantId, input);
+  if (duplicateMessage) return actionError(duplicateMessage);
 
   const { data: customer, error } = await supabase
     .from("customers")
@@ -314,6 +422,12 @@ export async function createCustomerFromLeadAction(formData: FormData): Promise<
   if (leadForLink.customer_id) {
     return actionError("Лид уже привязан к клиенту. Откройте существующую карточку клиента вместо создания дубля.");
   }
+  const duplicateMessage = await findDuplicateCustomerMessage(supabase, user.tenantId, {
+    phone: input.phone,
+    whatsapp: customerSource === "whatsapp" ? input.phone : null,
+    telegram_username: input.telegram_username
+  });
+  if (duplicateMessage) return actionError(duplicateMessage);
 
   const { data: customer, error: customerError } = await supabase
     .from("customers")
@@ -697,6 +811,36 @@ export async function updateVehicleAction(formData: FormData): Promise<ActionRes
   }
 
   const input = parsed.data;
+  const requestedVehicleStatus = normalizeManualVehicleStatus(input.status);
+
+  if (requestedVehicleStatus && ["maintenance", "repair", "retired"].includes(requestedVehicleStatus)) {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: blockingBookings, error: blockingBookingsError } = await supabase
+      .from("bookings")
+      .select("id, booking_number, status, rental_status, start_date, end_date, actual_end")
+      .eq("tenant_id", user.tenantId)
+      .eq("vehicle_id", input.id)
+      .in("status", ["confirmed", "paid_deposit", "handed_over", "active", "in_use", "returning"])
+      .limit(1000);
+
+    if (blockingBookingsError) {
+      console.error(blockingBookingsError.message);
+      return actionError("Не удалось проверить активные брони перед изменением статуса автомобиля.");
+    }
+
+    const blockingBooking = (blockingBookings ?? []).find((booking) => {
+      const status = String(booking.status ?? "");
+      const rentalStatus = String(booking.rental_status ?? "");
+      const start = String(booking.start_date ?? "").slice(0, 10);
+      const end = String(booking.actual_end ?? booking.end_date ?? "").slice(0, 10);
+      if (rentalStatusIsActive(rentalStatus) || rentalStatusIsActive(status)) return true;
+      return ["confirmed", "paid_deposit"].includes(status) && start <= today && end >= today;
+    });
+
+    if (blockingBooking) {
+      return actionError(`Статус заблокирован: автомобиль связан с активной бронью ${bookingNumberLabel(blockingBooking)}. Сначала завершите аренду/возврат или перенесите бронь.`);
+    }
+  }
 
   const vehiclePatch: Record<string, unknown> = {};
   const setIfPresent = (key: string, value: unknown) => {
@@ -716,7 +860,7 @@ export async function updateVehicleAction(formData: FormData): Promise<ActionRes
   setIfPresent("transmission", input.transmission);
   setIfPresent("seats", input.seats);
   setIfPresent("mileage_current", input.mileage_current);
-  setIfPresent("status", normalizeManualVehicleStatus(input.status));
+  setIfPresent("status", requestedVehicleStatus);
   setIfPresent("ownership_type", input.ownership_type);
   setIfPresent("acquisition_cost_thb", input.acquisition_cost_thb);
   setIfPresent("acquisition_date", input.acquisition_date);
@@ -1373,7 +1517,7 @@ const splitBookingSchema = bookingSchema.extend({
 
 const bookingStatusSchema = z.object({
   booking_id: z.string().uuid(),
-  status: z.enum(["draft", "confirmed", "paid_deposit", "completed", "cancelled", "no_show"])
+  status: z.enum(["draft", "confirmed", "paid_deposit", "handed_over", "active", "returning", "completed", "cancelled", "no_show"])
 });
 
 const bookingRentalStatusSchema = z.object({
@@ -1457,11 +1601,27 @@ type OverlapBookingCandidate = {
   actual_end?: string | null;
 };
 
+type MaintenanceBlockCandidate = {
+  id: string;
+  type?: string | null;
+  status?: string | null;
+  vehicle_unavailable_from?: string | null;
+  vehicle_unavailable_to?: string | null;
+};
+
 function bookingNumberLabel(booking: { id?: string | null; booking_number?: string | null }) {
   const bookingNumber = String(booking.booking_number ?? "").trim();
   if (bookingNumber) return bookingNumber;
   const shortId = String(booking.id ?? "").slice(0, 8);
   return shortId ? `бронь ${shortId}` : "другая бронь";
+}
+
+function maintenanceBlockLabel(block: MaintenanceBlockCandidate) {
+  const type = String(block.type ?? "ремонт/ТО");
+  const start = String(block.vehicle_unavailable_from ?? "").slice(0, 10);
+  const end = String(block.vehicle_unavailable_to ?? "").slice(0, 10);
+  const range = start && end ? `${start} - ${end}` : start ? `с ${start}` : "";
+  return range ? `${type} ${range}` : type;
 }
 
 function splitBookingBase(value: unknown) {
@@ -1701,6 +1861,36 @@ async function findOverlappingBooking(
   });
 }
 
+async function findOverlappingMaintenance(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  tenantId: string,
+  vehicleId: string,
+  startDate: string,
+  endDate: string
+) {
+  const startDateOnly = String(startDate).slice(0, 10);
+  const endDateOnly = String(endDate).slice(0, 10);
+
+  const { data, error } = await supabase
+    .from("maintenance_log")
+    .select("id, type, status, vehicle_unavailable_from, vehicle_unavailable_to")
+    .eq("tenant_id", tenantId)
+    .eq("vehicle_id", vehicleId)
+    .in("status", ["scheduled", "in_progress"])
+    .lte("vehicle_unavailable_from", endDateOnly)
+    .or(`vehicle_unavailable_to.gte.${startDateOnly},vehicle_unavailable_to.is.null`);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return ((data ?? []) as MaintenanceBlockCandidate[]).find((block) => {
+    const blockStart = String(block.vehicle_unavailable_from ?? "").slice(0, 10);
+    const blockEnd = String(block.vehicle_unavailable_to ?? "9999-12-31").slice(0, 10);
+    return Boolean(blockStart) && blockStart <= endDateOnly && blockEnd >= startDateOnly;
+  }) ?? null;
+}
+
 async function findLatestBlockingBookingForVehicle(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   tenantId: string,
@@ -1868,6 +2058,15 @@ async function findVehicleAvailabilityBlock(
   const overlap = await findOverlappingBooking(supabase, tenantId, vehicleId, startDate, endDate, excludeBookingId);
   if (overlap) return overlap;
 
+  const maintenanceOverlap = await findOverlappingMaintenance(supabase, tenantId, vehicleId, startDate, endDate);
+  if (maintenanceOverlap) {
+    return {
+      id: maintenanceOverlap.id,
+      booking_number: maintenanceBlockLabel(maintenanceOverlap),
+      status: maintenanceOverlap.status ?? "maintenance"
+    } satisfies OverlapBookingCandidate;
+  }
+
   let currentStatus = String(vehicleStatus ?? "");
   if (!currentStatus) {
     const { data: vehicle, error } = await supabase
@@ -2019,6 +2218,29 @@ async function createSplitBookingAction(
   if (["maintenance", "repair", "retired"].includes(String(desiredVehicle.status))) {
     return actionError("Желаемый автомобиль сейчас в ТО, ремонте или выведен из парка.");
   }
+
+  const [temporaryComplianceError, desiredComplianceError] = await Promise.all([
+    validateVehicleComplianceForBooking(
+      supabase,
+      user.tenantId,
+      input.temporary_vehicle_id,
+      input.temporary_start_date,
+      input.temporary_end_date,
+      user.role,
+      "Временный автомобиль"
+    ),
+    validateVehicleComplianceForBooking(
+      supabase,
+      user.tenantId,
+      input.vehicle_id,
+      input.start_date,
+      input.end_date,
+      user.role,
+      "Желаемый автомобиль"
+    )
+  ]);
+  if (temporaryComplianceError) return actionError(temporaryComplianceError);
+  if (desiredComplianceError) return actionError(desiredComplianceError);
 
   const [temporaryOverlap, desiredOverlap] = await Promise.all([
     findVehicleAvailabilityBlock(
@@ -2229,6 +2451,18 @@ export async function createBookingAction(formData: FormData): Promise<ActionRes
     return actionError("Автомобиль сейчас в ТО, ремонте или выведен из парка. Сначала измените статус автомобиля.");
   }
 
+  const complianceError = await validateVehicleComplianceForBooking(
+    supabase,
+    user.tenantId,
+    input.vehicle_id,
+    input.start_date,
+    input.end_date,
+    user.role
+  );
+  if (complianceError) {
+    return actionError(complianceError);
+  }
+
   try {
     const overlappingBooking = await findVehicleAvailabilityBlock(
       supabase,
@@ -2337,12 +2571,20 @@ export async function updateBookingDetailsAction(formData: FormData): Promise<Ac
 
   const { data: currentBooking, error: currentBookingError } = await supabase
     .from("bookings")
-    .select("id, booking_number, lead_id, customer_id, vehicle_id, status, rental_status, start_date, end_date, actual_end")
+    .select("id, booking_number, lead_id, customer_id, vehicle_id, status, rental_status, start_date, end_date, actual_end, payment_status, deposit_status")
     .eq("tenant_id", user.tenantId)
     .eq("id", input.booking_id)
     .maybeSingle();
   if (currentBookingError || !currentBooking) {
     return actionError("Бронь не найдена в текущей компании.");
+  }
+  const canEditFinancialStatus = ["owner", "accountant"].includes(user.role);
+  if (
+    !canEditFinancialStatus &&
+    (input.payment_status !== String(currentBooking.payment_status ?? "unpaid") ||
+      input.deposit_status !== String(currentBooking.deposit_status ?? "not_taken"))
+  ) {
+    return actionError("Финансовые статусы брони может менять только owner/accountant. Для manager/operator они обновляются через запись платежей.");
   }
 
   const splitBase = splitBookingBase(currentBooking.booking_number);
@@ -2384,6 +2626,18 @@ export async function updateBookingDetailsAction(formData: FormData): Promise<Ac
   }
   if (["maintenance", "repair", "retired"].includes(String(vehicle.status ?? ""))) {
     return actionError("Автомобиль сейчас в ТО, ремонте или выведен из парка. Сначала измените статус автомобиля.");
+  }
+
+  const complianceError = await validateVehicleComplianceForBooking(
+    supabase,
+    user.tenantId,
+    input.vehicle_id,
+    input.start_date,
+    input.end_date,
+    user.role
+  );
+  if (complianceError) {
+    return actionError(complianceError);
   }
 
   try {
@@ -2433,8 +2687,8 @@ export async function updateBookingDetailsAction(formData: FormData): Promise<Ac
       extras_total: input.extras_total,
       discount_amount: input.discount_amount,
       grand_total: calculatedGrandTotal,
-      payment_status: input.payment_status,
-      deposit_status: input.deposit_status
+      payment_status: canEditFinancialStatus ? input.payment_status : currentBooking.payment_status,
+      deposit_status: canEditFinancialStatus ? input.deposit_status : currentBooking.deposit_status
     })
     .eq("tenant_id", user.tenantId)
     .eq("id", input.booking_id);
@@ -2611,7 +2865,7 @@ export async function updateBookingStatusAction(formData: FormData): Promise<Act
 
   const { data: booking, error: bookingError } = await supabase
     .from("bookings")
-    .select("id, customer_id, vehicle_id, lead_id, status, rental_status")
+    .select("id, customer_id, vehicle_id, lead_id, status, rental_status, start_date, end_date, actual_end, actual_start, grand_total, deposit_amount, payment_status, deposit_status, return_photos, return_checklist")
     .eq("tenant_id", user.tenantId)
     .eq("id", input.booking_id)
     .maybeSingle();
@@ -2621,10 +2875,76 @@ export async function updateBookingStatusAction(formData: FormData): Promise<Act
     return actionError("Бронь не найдена в текущей компании.");
   }
 
+  if (["handed_over", "active"].includes(input.status)) {
+    if (!booking.vehicle_id) {
+      return actionError("Выдача заблокирована: в брони не выбран автомобиль.");
+    }
+    if (!booking.customer_id) {
+      return actionError("Выдача заблокирована: в брони не выбран клиент.");
+    }
+    try {
+      const overlappingBooking = await findVehicleAvailabilityBlock(
+        supabase,
+        user.tenantId,
+        booking.vehicle_id,
+        booking.start_date,
+        booking.actual_end ?? booking.end_date,
+        booking.id
+      );
+      if (overlappingBooking) {
+        return actionError(`Выдача заблокирована: автомобиль пересекается с бронью ${bookingNumberLabel(overlappingBooking)}.`);
+      }
+    } catch (error) {
+      return actionError(error instanceof Error ? error.message : "Не удалось проверить доступность автомобиля перед выдачей.");
+    }
+
+    const { data: customer } = await supabase
+      .from("customers")
+      .select("full_name_passport, passport_number, passport_expires, passport_photo_url, driver_license_photo_url, idp_number, idp_expires, idp_photo_url, has_valid_idp")
+      .eq("tenant_id", user.tenantId)
+      .eq("id", booking.customer_id)
+      .maybeSingle();
+    const hasValidPermit = Boolean(customer?.has_valid_idp) || hasValidDrivingPermit(customer?.idp_number, customer?.idp_expires);
+    const missingDocuments: string[] = [];
+    if (!customer?.full_name_passport?.trim()) missingDocuments.push("имя как в паспорте");
+    if (!customer?.passport_number?.trim()) missingDocuments.push("номер паспорта");
+    if (!normalizeDateInput(customer?.passport_expires)) missingDocuments.push("срок паспорта");
+    if (!customer?.passport_photo_url) missingDocuments.push("фото паспорта");
+    if (!customer?.driver_license_photo_url && !customer?.idp_photo_url) missingDocuments.push("фото прав / IDP");
+    if (!hasValidPermit) missingDocuments.push("действующий IDP / тайские права");
+    if (missingDocuments.length > 0 && user.role !== "owner") {
+      return actionError(`Выдача заблокирована: заполните ${missingDocuments.join(", ")}.`);
+    }
+    if (Number(booking.grand_total ?? 0) <= 0) {
+      return actionError("Выдача заблокирована: сумма аренды в брони не заполнена.");
+    }
+    if (String(booking.payment_status ?? "unpaid") === "unpaid" && user.role !== "owner") {
+      return actionError("Выдача заблокирована: оплата не отмечена. Owner может принять финансовое решение вручную.");
+    }
+    if (Number(booking.deposit_amount ?? 0) > 0 && String(booking.deposit_status ?? "not_taken") === "not_taken" && user.role !== "owner") {
+      return actionError("Выдача заблокирована: депозит не отмечен. Owner может принять финансовое решение вручную.");
+    }
+  }
+
   const currentRentalStatus = String(booking.rental_status ?? "not_started");
   const currentRentalWasIssued = rentalStatusWasIssued(currentRentalStatus);
   if (input.status === "completed" && !currentRentalWasIssued) {
     return actionError("Нельзя завершить бронь как аренду без фактической выдачи. Если клиент не приехал, используйте «Неявка» или «Отменена».");
+  }
+  if (input.status === "completed" && user.role !== "owner") {
+    const isReturning = String(booking.status ?? "") === "returning" || String(booking.rental_status ?? "") === "returning";
+    if (!isReturning) {
+      return actionError("Сначала переведите аренду в «Возврат», загрузите фиксацию возврата, затем завершайте аренду.");
+    }
+    if (!hasMediaItems(booking.return_photos)) {
+      return actionError("Завершение заблокировано: загрузите фото возврата автомобиля.");
+    }
+    if (!hasChecklistVideos(booking.return_checklist)) {
+      return actionError("Завершение заблокировано: загрузите видео возврата автомобиля.");
+    }
+    if (Number(booking.deposit_amount ?? 0) > 0 && String(booking.deposit_status ?? "not_taken") === "held") {
+      return actionError("Завершение заблокировано: депозит ещё в статусе held. Верните, удержите или отметьте решение по депозиту.");
+    }
   }
   if (input.status === "no_show" && currentRentalWasIssued) {
     return actionError("Нельзя поставить «Неявка», когда автомобиль уже был выдан. Используйте возврат/завершение аренды.");
@@ -2636,9 +2956,19 @@ export async function updateBookingStatusAction(formData: FormData): Promise<Act
   const updatePayload: Record<string, string> = {
     status: input.status
   };
+  const nowIso = new Date().toISOString();
+  if (["handed_over", "active"].includes(input.status)) {
+    updatePayload.rental_status = input.status;
+    if (!booking.actual_start) {
+      updatePayload.actual_start = nowIso;
+    }
+  }
+  if (input.status === "returning") {
+    updatePayload.rental_status = "returning";
+  }
   if (input.status === "completed") {
     updatePayload.rental_status = "returned";
-    updatePayload.actual_end = new Date().toISOString();
+    updatePayload.actual_end = nowIso;
   }
   if (["cancelled", "no_show", "draft"].includes(input.status)) {
     updatePayload.rental_status = "not_started";
@@ -2706,7 +3036,7 @@ export async function updateBookingRentalStatusAction(formData: FormData): Promi
 
   const { data: booking, error: bookingError } = await supabase
     .from("bookings")
-    .select("id, customer_id, vehicle_id, lead_id, status, rental_status, start_date, end_date, actual_end, actual_start")
+    .select("id, customer_id, vehicle_id, lead_id, status, rental_status, start_date, end_date, actual_end, actual_start, deposit_amount, deposit_status, return_photos, return_checklist")
     .eq("tenant_id", user.tenantId)
     .eq("id", input.booking_id)
     .maybeSingle();
@@ -2725,6 +3055,22 @@ export async function updateBookingRentalStatusAction(formData: FormData): Promi
 
   if (["cancelled", "no_show"].includes(String(booking.status ?? ""))) {
     return actionError("Нельзя менять аренду у отменённой брони или no-show. Создайте новую бронь, если клиент всё-таки приехал.");
+  }
+
+  if (input.rental_status === "returned" && user.role !== "owner") {
+    const isReturning = String(booking.status ?? "") === "returning" || String(booking.rental_status ?? "") === "returning";
+    if (!isReturning) {
+      return actionError("Сначала переведите аренду в «Возврат», загрузите фиксацию возврата, затем ставьте «Возвращена».");
+    }
+    if (!hasMediaItems(booking.return_photos)) {
+      return actionError("Возврат заблокирован: загрузите фото возврата автомобиля.");
+    }
+    if (!hasChecklistVideos(booking.return_checklist)) {
+      return actionError("Возврат заблокирован: загрузите видео возврата автомобиля.");
+    }
+    if (Number(booking.deposit_amount ?? 0) > 0 && String(booking.deposit_status ?? "not_taken") === "held") {
+      return actionError("Возврат заблокирован: депозит ещё в статусе held. Верните, удержите или отметьте решение по депозиту.");
+    }
   }
 
   if (["handed_over", "active"].includes(input.rental_status)) {
@@ -2800,7 +3146,7 @@ export async function updateBookingRentalStatusAction(formData: FormData): Promi
     console.error(error.message);
     let friendlyMessage = error.message;
     if (error.message.includes("without active insurance")) {
-      friendlyMessage = "Выдача заблокирована: у автомобиля нет активной страховки на даты этой брони. Пожалуйста, перейдите в раздел «Страховки» (или в карточку этого автомобиля) и добавьте действующий страховой полис, покрывающий даты аренды, чтобы разблокировать выдачу.";
+      friendlyMessage = "База данных всё ещё содержит старый стоп-триггер по страховке. По новой логике страховка/Por Ror Bor продлеваются по напоминаниям и не должны блокировать аренду. Нужно снять старый DB-триггер в Supabase.";
     }
     if (error.message.includes("Valid IDP is required")) {
       friendlyMessage = user.role === "owner"
@@ -2970,6 +3316,94 @@ const paymentSchema = z.object({
   method: z.string().default("cash")
 });
 
+function formatPaymentDate(value: string | null | undefined, lang: "ru" | "en") {
+  if (!value) return lang === "en" ? "not covered yet" : "пока не покрыта";
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(lang === "en" ? "en-US" : "ru-RU");
+}
+
+async function sendBookingPaymentNotification(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  tenantId: string,
+  bookingId: string,
+  paidNow: number
+) {
+  try {
+    if (paidNow <= 0) return;
+
+    const [{ data: booking }, { data: payments }] = await Promise.all([
+      supabase
+        .from("bookings")
+        .select("*, customer:customers(*), vehicle:vehicles(*)")
+        .eq("tenant_id", tenantId)
+        .eq("id", bookingId)
+        .maybeSingle(),
+      supabase
+        .from("payments")
+        .select("amount, type, status")
+        .eq("tenant_id", tenantId)
+        .eq("booking_id", bookingId)
+        .eq("status", "completed")
+    ]);
+
+    if (!booking?.customer) return;
+
+    const customer = booking.customer;
+    const vehicle = booking.vehicle;
+    const lang: "ru" | "en" = customer.language_pref === "en" ? "en" : "ru";
+    const coverage = calculateRentalPaymentCoverage(booking, payments ?? []);
+    const customerName = customer.full_name || customer.full_name_passport || (lang === "en" ? "there" : "клиент");
+    const vehicleName = vehicle ? `${vehicle.make ?? ""} ${vehicle.model ?? ""}`.trim() : lang === "en" ? "your car" : "ваш автомобиль";
+    const paidThrough = coverage.isLongTerm && coverage.paidThroughDate
+      ? formatPaymentDate(coverage.paidThroughDate, lang)
+      : coverage.isFullyPaid
+      ? (lang === "en" ? "the end of the rental" : "конца аренды")
+      : formatPaymentDate(coverage.paidThroughDate, lang);
+    const moneyText = (value: number) => `${Math.round(Number(value || 0)).toLocaleString("ru-RU")} THB`;
+    const coverageLabel = coverage.isLongTerm
+      ? (lang === "en" ? "monthly rental period" : "месячный период аренды")
+      : (lang === "en" ? "full short-term rental" : "вся краткосрочная аренда");
+    const fullTermLabel = coverage.isLongTerm
+      ? `${coverage.termMonths} ${lang === "en" ? "month(s)" : "мес."} × ${moneyText(coverage.rentalDue)} = ${moneyText(coverage.fullRentalDue)}`
+      : `${coverage.totalDays} ${lang === "en" ? "day(s)" : "дн."} × ${moneyText(coverage.dailyRate)} = ${moneyText(coverage.fullRentalDue)}`;
+    const balanceLabel = lang === "en" ? "Remaining until rental end" : "Осталось оплатить до конца срока";
+
+    const messageText = lang === "en"
+      ? `Hi ${customerName}! We received your payment of ${moneyText(paidNow)} for booking #${booking.booking_number} (${vehicleName}).\n\nPayment basis: ${coverageLabel} (${moneyText(coverage.rentalDue)}).\nFull rental term: ${fullTermLabel}.\nRental is now paid until ${paidThrough}.\n${balanceLabel}: ${moneyText(coverage.remainingRental)}.\nDeposit paid: ${moneyText(coverage.depositPaid)}.\n\nThank you! We will keep everything updated in your booking.`
+      : `Здравствуйте, ${customerName}! Мы получили оплату ${moneyText(paidNow)} по брони #${booking.booking_number} (${vehicleName}).\n\nБаза оплаты: ${coverageLabel} (${moneyText(coverage.rentalDue)}).\nВесь срок аренды: ${fullTermLabel}.\nАренда сейчас оплачена до ${paidThrough}.\n${balanceLabel}: ${moneyText(coverage.remainingRental)}.\nОплачено депозита: ${moneyText(coverage.depositPaid)}.\n\nСпасибо! Мы все зафиксировали в вашей брони.`;
+
+    const messagingSecret = process.env.EPICENTER_MESSAGING_SECRET || "00d57c65010537e2d52f8979d0ef8c88204410a4dcf7b6b36187879c08a05034";
+    const phoneNum = customer.whatsapp || customer.phone;
+    if (phoneNum) {
+      fetch(process.env.WHATSAPP_SEND_URL || "https://n8nx.pro/webhook/whatsappOutboundWfCR/webhook/epicenter-messaging/whatsapp/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-epicenter-messaging-secret": messagingSecret
+        },
+        body: JSON.stringify({ phoneNumber: phoneNum, messageText })
+      }).catch((err) => console.error("Payment notification WhatsApp send failed:", err));
+    }
+
+    if (customer.telegram_username) {
+      const cleanedTg = String(customer.telegram_username).trim().replace(/^(https?:\/\/)?(www\.)?t\.me\//i, "").replace(/^@/, "");
+      if (cleanedTg) {
+        fetch(process.env.TELEGRAM_SEND_URL || "https://n8nx.pro/epicenter-messaging/telegram/send", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-epicenter-messaging-secret": messagingSecret
+          },
+          body: JSON.stringify({ TelegramUsername: `@${cleanedTg}`, messageText: messageText.replace(/\*/g, "") })
+        }).catch((err) => console.error("Payment notification Telegram send failed:", err));
+      }
+    }
+  } catch (err) {
+    console.error("sendBookingPaymentNotification crashed:", err);
+  }
+}
+
 export async function recordBookingPaymentsAction(formData: FormData): Promise<ActionResult> {
   const supabase = requireSupabase();
   if (!supabase) {
@@ -2994,7 +3428,7 @@ export async function recordBookingPaymentsAction(formData: FormData): Promise<A
 
   const { data: booking } = await supabase
     .from("bookings")
-    .select("id, booking_number, customer_id, vehicle_id, grand_total")
+    .select("id, booking_number, customer_id, vehicle_id, grand_total, deposit_amount")
     .eq("tenant_id", user.tenantId)
     .eq("id", input.booking_id)
     .maybeSingle();
@@ -3028,6 +3462,28 @@ export async function recordBookingPaymentsAction(formData: FormData): Promise<A
     }));
 
   if (rows.length > 0) {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    for (const row of rows) {
+      const { data: duplicatePayment, error: duplicateError } = await supabase
+        .from("payments")
+        .select("id")
+        .eq("tenant_id", user.tenantId)
+        .eq("booking_id", input.booking_id)
+        .eq("type", row.type)
+        .eq("amount", row.amount)
+        .eq("method", input.method)
+        .eq("status", "completed")
+        .gte("created_at", twoMinutesAgo)
+        .limit(1)
+        .maybeSingle();
+      if (duplicateError) {
+        return actionError(`Не удалось проверить повтор платежа: ${duplicateError.message}`);
+      }
+      if (duplicatePayment) {
+        return actionOk("Похожий платеж уже записан недавно. Повторная запись остановлена.");
+      }
+    }
+
     const { error } = await supabase.from("payments").insert(rows);
     if (error) {
       console.error(error.message);
@@ -3037,7 +3493,7 @@ export async function recordBookingPaymentsAction(formData: FormData): Promise<A
 
   const { data: completedPayments, error: paymentsError } = await supabase
     .from("payments")
-    .select("amount, type")
+    .select("amount, type, status")
     .eq("tenant_id", user.tenantId)
     .eq("booking_id", input.booking_id)
     .eq("status", "completed");
@@ -3046,25 +3502,25 @@ export async function recordBookingPaymentsAction(formData: FormData): Promise<A
     return actionError(`Платежи записаны, но не удалось пересчитать статус оплаты: ${paymentsError.message}`);
   }
 
-  const totalPaid = (completedPayments ?? []).reduce((sum, row) => {
-    const amount = Number(row.amount ?? 0);
-    return row.type === "refund" ? sum - amount : sum + amount;
-  }, 0);
-  const depositPaid = (completedPayments ?? [])
-    .filter((row) => row.type === "deposit")
-    .reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
-  const paymentStatus = totalPaid <= 0 ? "unpaid" : totalPaid >= Number(booking.grand_total ?? 0) ? "fully_paid" : "partial";
+  const financialStatus = calculateBookingFinancialStatus(booking, completedPayments ?? []);
   const { error: bookingError } = await supabase
     .from("bookings")
-    .update({ payment_status: paymentStatus, deposit_status: depositPaid > 0 ? "held" : "not_taken" })
+    .update({ payment_status: financialStatus.paymentStatus, deposit_status: financialStatus.depositStatus })
     .eq("tenant_id", user.tenantId)
     .eq("id", input.booking_id);
 
   if (bookingError) return actionError(`Платежи записаны, но статус брони не обновился: ${bookingError.message}`);
 
   await refreshCustomerBookingStats(supabase, user.tenantId, booking.customer_id);
+  const paidNow = rows.reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
+  if (paidNow > 0) {
+    sendBookingPaymentNotification(supabase, user.tenantId, input.booking_id, paidNow).catch((err) =>
+      console.error("Failed to send booking payment notification:", err)
+    );
+  }
 
   revalidatePath("/");
+  revalidatePath("/finance");
   revalidatePath("/handover");
   revalidatePath("/bookings");
   revalidatePath(`/bookings/${input.booking_id}`);
@@ -3469,6 +3925,12 @@ export async function recordMaintenanceExpenseAction(formData: FormData): Promis
   if (input.status === "completed" && !input.completed_date) {
     return actionError("Для завершенной работы укажите дату выполнения.");
   }
+  if (input.status === "scheduled" && (!input.vehicle_unavailable_from || !input.vehicle_unavailable_to)) {
+    return actionError("Для запланированного ТО/ремонта укажите даты недоступности автомобиля.");
+  }
+  if (input.status === "in_progress" && !input.vehicle_unavailable_from) {
+    return actionError("Для ремонта в работе укажите дату начала недоступности автомобиля.");
+  }
   if (input.vehicle_unavailable_from && input.vehicle_unavailable_to && input.vehicle_unavailable_to < input.vehicle_unavailable_from) {
     return actionError("Дата окончания недоступности не может быть раньше даты начала.");
   }
@@ -3479,13 +3941,43 @@ export async function recordMaintenanceExpenseAction(formData: FormData): Promis
     return actionError("Автомобиль не найден в текущей компании.");
   }
 
+  const unavailableFrom = input.vehicle_unavailable_from || (input.status === "in_progress" ? new Date().toISOString().slice(0, 10) : null);
+  const unavailableTo = input.vehicle_unavailable_to || (input.status === "in_progress" ? null : unavailableFrom);
+  if (input.status !== "completed" && unavailableFrom) {
+    const unavailableCheckTo = unavailableTo || "9999-12-31";
+    try {
+      const overlappingBooking = await findOverlappingBooking(
+        supabase,
+        user.tenantId,
+        input.vehicle_id,
+        unavailableFrom,
+        unavailableCheckTo
+      );
+      if (overlappingBooking) {
+        return actionError(`Нельзя поставить ремонт/ТО на эти даты: автомобиль уже заблокирован бронью ${bookingNumberLabel(overlappingBooking)}.`);
+      }
+      const overlappingMaintenance = await findOverlappingMaintenance(
+        supabase,
+        user.tenantId,
+        input.vehicle_id,
+        unavailableFrom,
+        unavailableCheckTo
+      );
+      if (overlappingMaintenance) {
+        return actionError(`Нельзя поставить ремонт/ТО на эти даты: уже есть блок ${maintenanceBlockLabel(overlappingMaintenance)}.`);
+      }
+    } catch (error) {
+      return actionError(error instanceof Error ? error.message : "Не удалось проверить брони перед записью ремонта/ТО.");
+    }
+  }
+
   const { error } = await supabase.from("maintenance_log").insert({
     tenant_id: user.tenantId,
     vehicle_id: input.vehicle_id,
     type: input.type,
     is_routine: input.type === "scheduled_service" || input.type === "oil_change" || input.type === "wash",
     completed_date: input.status === "completed" ? input.completed_date : null,
-    vehicle_unavailable_from: input.vehicle_unavailable_from || (input.status === "in_progress" ? new Date().toISOString().slice(0, 10) : null),
+    vehicle_unavailable_from: unavailableFrom,
     vehicle_unavailable_to: input.vehicle_unavailable_to || null,
     mileage_at_service: input.mileage_at_service ?? null,
     cost: input.cost,
@@ -3501,8 +3993,6 @@ export async function recordMaintenanceExpenseAction(formData: FormData): Promis
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const unavailableFrom = input.vehicle_unavailable_from;
-  const unavailableTo = input.vehicle_unavailable_to;
   const isUnavailableNow =
     input.status === "in_progress" ||
     (input.status === "scheduled" &&
@@ -3525,6 +4015,7 @@ export async function recordMaintenanceExpenseAction(formData: FormData): Promis
   revalidatePath("/");
   revalidatePath("/maintenance");
   revalidatePath(`/fleet/${input.vehicle_id}`);
+  revalidatePath("/launch");
   return actionOk("Расход ТО/ремонта записан.");
 }
 
@@ -3571,6 +4062,85 @@ export async function updateRecommendationStatusAction(formData: FormData): Prom
 
   revalidatePath("/");
   revalidatePath("/finance");
+}
+
+export async function recalculateAllCustomerMetricsAction(): Promise<ActionResult> {
+  const supabase = requireSupabase();
+  if (!supabase) {
+    return actionError("Supabase не настроен. Проверьте переменные окружения CRM.");
+  }
+
+  const user = await requireRole(["owner", "accountant"]);
+  if (!user) return actionError("Пересчет клиентских метрик доступен только owner/accountant.");
+
+  const { data: customers, error } = await supabase
+    .from("customers")
+    .select("id")
+    .eq("tenant_id", user.tenantId)
+    .limit(10000);
+
+  if (error) {
+    return actionError(`Не удалось прочитать клиентов: ${error.message}`);
+  }
+
+  const failures: string[] = [];
+  for (const customer of customers ?? []) {
+    const result = await recalculateCustomerBookingStats(supabase, user.tenantId, customer.id);
+    if (!result.ok) failures.push(`${customer.id}: ${result.error}`);
+  }
+
+  revalidatePath("/");
+  revalidatePath("/customers");
+  revalidatePath("/analytics");
+  revalidatePath("/finance");
+  revalidatePath("/launch");
+
+  if (failures.length > 0) {
+    return actionError(`Метрики пересчитаны частично. Ошибок: ${failures.length}. Первая: ${failures[0]}`);
+  }
+
+  return actionOk(`Метрики клиентов пересчитаны: ${customers?.length ?? 0}.`);
+}
+
+const customerMetricsSchema = z.object({
+  customer_id: z.string().uuid()
+});
+
+export async function recalculateCustomerMetricsAction(formData: FormData): Promise<ActionResult> {
+  const supabase = requireSupabase();
+  if (!supabase) {
+    return actionError("Supabase не настроен. Проверьте переменные окружения CRM.");
+  }
+
+  const user = await requireRole(["owner", "accountant", "manager"]);
+  if (!user) return actionError("Недостаточно прав для пересчета метрик клиента.");
+
+  const parsed = customerMetricsSchema.safeParse({
+    customer_id: formData.get("customer_id")
+  });
+  if (!parsed.success) {
+    return actionError("Некорректный идентификатор клиента.");
+  }
+
+  const { data: customer, error } = await supabase
+    .from("customers")
+    .select("id")
+    .eq("tenant_id", user.tenantId)
+    .eq("id", parsed.data.customer_id)
+    .maybeSingle();
+  if (error) return actionError(`Не удалось прочитать клиента: ${error.message}`);
+  if (!customer) return actionError("Клиент не найден в текущей компании.");
+
+  const result = await recalculateCustomerBookingStats(supabase, user.tenantId, customer.id);
+  if (!result.ok) return actionError(`Метрики клиента не пересчитаны: ${result.error}`);
+
+  revalidatePath("/");
+  revalidatePath("/customers");
+  revalidatePath(`/customers/${customer.id}`);
+  revalidatePath("/analytics");
+  revalidatePath("/finance");
+
+  return actionOk("Метрики клиента пересчитаны.");
 }
 
 export async function uploadBookingMediaAction(formData: FormData): Promise<ActionResult> {
@@ -3661,6 +4231,7 @@ export async function uploadBookingMediaAction(formData: FormData): Promise<Acti
 
   revalidatePath("/");
   revalidatePath("/handover");
+  revalidatePath("/launch");
   revalidatePath("/documents");
   revalidatePath(`/bookings/${input.booking_id}`);
   if (booking.customer_id) revalidatePath(`/customers/${booking.customer_id}`);
@@ -3970,6 +4541,47 @@ async function findLastConversationContact(
   return matched?.contact_handle ?? null;
 }
 
+async function hasRecentOutboundMessage(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  tenantId: string,
+  scope: { customerId?: string | null; leadId?: string | null },
+  input: {
+    channel: "whatsapp" | "telegram" | "line" | "instagram" | "tiktok";
+    recipient: string;
+    messageText: string;
+    messageType: string;
+    mediaUrl?: string | null;
+  }
+) {
+  const storedChannel = ["line", "tiktok"].includes(input.channel) ? "other" : input.channel;
+  const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  let query = supabase
+    .from("conversation_messages")
+    .select("id, channel, message_text, message_type, media_url, raw_payload")
+    .eq("tenant_id", tenantId)
+    .eq("direction", "outbound")
+    .eq("contact_handle", input.recipient)
+    .eq("channel", storedChannel)
+    .gte("occurred_at", twoMinutesAgo)
+    .limit(20);
+
+  if (scope.customerId) query = query.eq("customer_id", scope.customerId);
+  if (scope.leadId) query = query.eq("lead_id", scope.leadId);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn("Recent outbound duplicate check failed.", error.message);
+    return false;
+  }
+
+  return (data ?? []).some((message) => {
+    if (!sameMessagingChannel(effectiveConversationChannel(message), input.channel)) return false;
+    if (String(message.message_text ?? "") !== input.messageText) return false;
+    if (String(message.message_type ?? "text") !== input.messageType) return false;
+    return String(message.media_url ?? "") === String(input.mediaUrl ?? "");
+  });
+}
+
 export async function sendCustomerMessageAction(formData: FormData): Promise<ActionResult> {
   const supabase = requireSupabase();
   if (!supabase) {
@@ -4030,6 +4642,17 @@ export async function sendCustomerMessageAction(formData: FormData): Promise<Act
     console.error(`Customer has no ${input.channel} recipient.`);
     return actionError(`У клиента нет контакта для ${input.channel}.`);
   }
+  const messageText = input.message_text || (input.message_type === "video" ? "[Видео]" : "[Фото]");
+  const recentDuplicate = await hasRecentOutboundMessage(supabase, currentUser.tenantId, { customerId: customer.id }, {
+    channel: input.channel,
+    recipient,
+    messageText,
+    messageType: input.message_type,
+    mediaUrl: input.media_url
+  });
+  if (recentDuplicate) {
+    return actionOk("Такое сообщение уже отправлялось этому клиенту недавно. Повторная отправка остановлена.");
+  }
 
   let payload: Record<string, unknown> = {};
   if (input.channel === "whatsapp") {
@@ -4084,7 +4707,7 @@ export async function sendCustomerMessageAction(formData: FormData): Promise<Act
     return actionError(`Шлюз сообщений вернул ошибку ${response.status}.`);
   }
 
-  await supabase.from("conversation_messages").insert({
+  const { error: messageInsertError } = await supabase.from("conversation_messages").insert({
     tenant_id: customer.tenant_id,
     customer_id: customer.id,
     channel: ["line", "tiktok"].includes(input.channel) ? "other" : input.channel,
@@ -4093,7 +4716,7 @@ export async function sendCustomerMessageAction(formData: FormData): Promise<Act
     sender_name: currentUser.fullName,
     sender_user_id: currentUser.authUserId,
     contact_handle: recipient,
-    message_text: input.message_text || (input.message_type === "video" ? "[Видео]" : "[Фото]"),
+    message_text: messageText,
     message_type: input.message_type,
     media_url: input.media_url,
     status: "sent",
@@ -4104,6 +4727,10 @@ export async function sendCustomerMessageAction(formData: FormData): Promise<Act
     },
     occurred_at: new Date().toISOString()
   });
+  if (messageInsertError) {
+    console.error(`Message sent but history insert failed: ${messageInsertError.message}`);
+    return actionError("Сообщение отправлено, но история не сохранилась. Проверьте чат и не отправляйте повторно сразу.");
+  }
 
   await supabase.from("notifications").insert({
     tenant_id: customer.tenant_id,
@@ -4195,6 +4822,17 @@ export async function sendLeadMessageAction(formData: FormData): Promise<ActionR
     console.error(`Lead has no ${input.channel} recipient.`);
     return actionError(`У лида нет контакта для ${input.channel}.`);
   }
+  const messageText = input.message_text || (input.message_type === "video" ? "[Видео]" : "[Фото]");
+  const recentDuplicate = await hasRecentOutboundMessage(supabase, currentUser.tenantId, { leadId: lead.id }, {
+    channel: input.channel,
+    recipient,
+    messageText,
+    messageType: input.message_type,
+    mediaUrl: input.media_url
+  });
+  if (recentDuplicate) {
+    return actionOk("Такое сообщение уже отправлялось этому лиду недавно. Повторная отправка остановлена.");
+  }
 
   let payload: Record<string, unknown> = {};
   if (input.channel === "whatsapp") {
@@ -4249,7 +4887,7 @@ export async function sendLeadMessageAction(formData: FormData): Promise<ActionR
     return actionError(`Шлюз сообщений вернул ошибку ${response.status}.`);
   }
 
-  await supabase.from("conversation_messages").insert({
+  const { error: messageInsertError } = await supabase.from("conversation_messages").insert({
     tenant_id: lead.tenant_id,
     customer_id: lead.customer_id,
     lead_id: lead.id,
@@ -4259,7 +4897,7 @@ export async function sendLeadMessageAction(formData: FormData): Promise<ActionR
     sender_name: currentUser.fullName,
     sender_user_id: currentUser.authUserId,
     contact_handle: recipient,
-    message_text: input.message_text || (input.message_type === "video" ? "[Видео]" : "[Фото]"),
+    message_text: messageText,
     message_type: input.message_type,
     media_url: input.media_url,
     status: "sent",
@@ -4270,6 +4908,10 @@ export async function sendLeadMessageAction(formData: FormData): Promise<ActionR
     },
     occurred_at: new Date().toISOString()
   });
+  if (messageInsertError) {
+    console.error(`Lead message sent but history insert failed: ${messageInsertError.message}`);
+    return actionError("Сообщение отправлено, но история лида не сохранилась. Проверьте чат и не отправляйте повторно сразу.");
+  }
 
   await supabase.from("event_outbox").insert({
     tenant_id: lead.tenant_id,
@@ -4380,6 +5022,8 @@ export async function updateCustomerAction(formData: FormData): Promise<ActionRe
   const hasValidIdp = hasValidDrivingPermit(input.idp_number, idpExpires);
   const customerSource = normalizeSourceForDb(input.source);
   const customerSourceDetail = sourceDetailWithOriginalSource(input.source, input.source_detail);
+  const duplicateMessage = await findDuplicateCustomerMessage(supabase, user.tenantId, input, input.id);
+  if (duplicateMessage) return actionError(duplicateMessage);
 
   const { error } = await supabase.from("customers").update({
     full_name: input.full_name,
@@ -4842,9 +5486,15 @@ export async function mergeCustomersAction(formData: FormData): Promise<ActionRe
     return actionError(`Не удалось удалить старого клиента после переноса данных: ${deleteErr.message}`);
   }
 
+  await refreshCustomerBookingStats(supabase, user.tenantId, target_customer_id);
+
   revalidatePath("/");
   revalidatePath("/customers");
   revalidatePath(`/customers/${target_customer_id}`);
+  revalidatePath("/bookings");
+  revalidatePath("/leads");
+  revalidatePath("/analytics");
+  revalidatePath("/launch");
   return actionOk("Клиенты успешно объединены! Все данные перенесены.", target_customer_id);
 }
 
@@ -4975,22 +5625,69 @@ export async function sendCustomerNotification(
     }
 
     const messagingSecret = process.env.EPICENTER_MESSAGING_SECRET || "00d57c65010537e2d52f8979d0ef8c88204410a4dcf7b6b36187879c08a05034";
+    const recordNotificationAttempt = async (
+      channel: "whatsapp" | "telegram",
+      recipient: string,
+      status: "sent" | "failed",
+      rawPayload: Record<string, unknown>
+    ) => {
+      const { error: insertError } = await supabase.from("conversation_messages").insert({
+        tenant_id: tenantId,
+        customer_id: customer.id,
+        channel,
+        direction: "outbound",
+        sender_type: "system",
+        sender_name: "CRM automation",
+        contact_handle: recipient,
+        message_text: channel === "telegram" ? messageText.replace(/\*/g, "") : messageText,
+        message_type: "text",
+        status,
+        raw_payload: {
+          event,
+          booking_id: booking.id,
+          booking_number: booking.booking_number,
+          ...rawPayload
+        },
+        occurred_at: new Date().toISOString()
+      });
+      if (insertError) {
+        console.error(`Notification ${channel} history insert failed: ${insertError.message}`);
+      }
+    };
 
     // 1. WhatsApp outbound
     const phoneNum = customer.whatsapp || customer.phone;
     if (phoneNum) {
       console.log(`sendCustomerNotification: Sending WhatsApp for event ${event} to ${phoneNum}`);
-      fetch(process.env.WHATSAPP_SEND_URL || "https://n8nx.pro/webhook/whatsappOutboundWfCR/webhook/epicenter-messaging/whatsapp/send", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-epicenter-messaging-secret": messagingSecret
-        },
-        body: JSON.stringify({
-          phoneNumber: phoneNum,
-          messageText: messageText
-        })
-      }).catch((err) => console.error("Notification WhatsApp send failed:", err));
+      const gateway = process.env.WHATSAPP_SEND_URL || "https://n8nx.pro/webhook/whatsappOutboundWfCR/webhook/epicenter-messaging/whatsapp/send";
+      try {
+        const response = await fetch(gateway, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-epicenter-messaging-secret": messagingSecret
+          },
+          body: JSON.stringify({
+            phoneNumber: phoneNum,
+            messageText: messageText
+          })
+        });
+        const responseText = await response.text().catch(() => "");
+        await recordNotificationAttempt("whatsapp", phoneNum, response.ok ? "sent" : "failed", {
+          gateway,
+          http_status: response.status,
+          response_text: responseText.slice(0, 500)
+        });
+        if (!response.ok) {
+          console.error(`Notification WhatsApp send failed: ${response.status} ${responseText}`);
+        }
+      } catch (err) {
+        await recordNotificationAttempt("whatsapp", phoneNum, "failed", {
+          gateway,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        console.error("Notification WhatsApp send failed:", err);
+      }
     }
 
     // 2. Telegram outbound
@@ -5001,17 +5698,36 @@ export async function sendCustomerNotification(
       if (cleanedTg) {
         const tgUsername = `@${cleanedTg}`;
         console.log(`sendCustomerNotification: Sending Telegram for event ${event} to ${tgUsername}`);
-        fetch(process.env.TELEGRAM_SEND_URL || "https://n8nx.pro/epicenter-messaging/telegram/send", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-epicenter-messaging-secret": messagingSecret
-          },
-          body: JSON.stringify({
-            TelegramUsername: tgUsername,
-            messageText: messageText.replace(/\*/g, "")
-          })
-        }).catch((err) => console.error("Notification Telegram send failed:", err));
+        const gateway = process.env.TELEGRAM_SEND_URL || "https://n8nx.pro/epicenter-messaging/telegram/send";
+        const telegramMessageText = messageText.replace(/\*/g, "");
+        try {
+          const response = await fetch(gateway, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-epicenter-messaging-secret": messagingSecret
+            },
+            body: JSON.stringify({
+              TelegramUsername: tgUsername,
+              messageText: telegramMessageText
+            })
+          });
+          const responseText = await response.text().catch(() => "");
+          await recordNotificationAttempt("telegram", tgUsername, response.ok ? "sent" : "failed", {
+            gateway,
+            http_status: response.status,
+            response_text: responseText.slice(0, 500)
+          });
+          if (!response.ok) {
+            console.error(`Notification Telegram send failed: ${response.status} ${responseText}`);
+          }
+        } catch (err) {
+          await recordNotificationAttempt("telegram", tgUsername, "failed", {
+            gateway,
+            error: err instanceof Error ? err.message : String(err)
+          });
+          console.error("Notification Telegram send failed:", err);
+        }
       }
     }
   } catch (err) {

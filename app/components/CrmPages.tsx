@@ -11,6 +11,7 @@ import { LeadProgressForm } from "@/app/components/LeadProgressForm";
 import { MessageCenter } from "@/app/components/MessageCenter";
 import { getLocale, tr } from "@/lib/i18n";
 import { isActiveLeadStage, leadStageMeta, leadStages } from "@/lib/lead-stages";
+import { calculateBookingRevenue } from "@/lib/payment-status";
 import { getCurrentUserContext, getDashboardData } from "@/lib/repository";
 import type { Locale } from "@/lib/i18n";
 import type { CurrentUserContext } from "@/lib/repository";
@@ -217,6 +218,16 @@ function bookingForVehicleDay(vehicle: DashboardData["vehicles"][number], bookin
   });
 }
 
+function maintenanceForVehicleDay(vehicle: DashboardData["vehicles"][number], maintenance: DashboardData["maintenance"], day: string) {
+  return maintenance.find((item) => {
+    if (item.vehicle_id !== vehicle.id) return false;
+    if (!["scheduled", "in_progress"].includes(String(item.status ?? ""))) return false;
+    const start = String(item.vehicle_unavailable_from ?? "").slice(0, 10);
+    const end = String(item.vehicle_unavailable_to ?? "9999-12-31").slice(0, 10);
+    return dateInRange(day, start, end);
+  });
+}
+
 function MiniBarChart({ values, labels, tone = "aqua" }: { values: number[]; labels: string[]; tone?: "aqua" | "sun" }) {
   const max = Math.max(...values, 1);
   return (
@@ -256,7 +267,7 @@ export function DashboardPage({ user, data, locale }: PageProps) {
   const conversionBase = workingLeads.length + bookedLeads + data.leads.filter((lead) => lead.stage === "lost").length;
   const leadConversion = conversionBase ? Math.round((bookedLeads / conversionBase) * 100) : 0;
   const recovered = data.vehicles.filter((vehicle) => vehicle.status_financial === "RECOVERED" || vehicle.status_financial === "PROFIT_GENERATING").length;
-  const revenueToday = data.bookings.reduce((sum, booking) => sum + booking.grand_total, 0);
+  const revenueToday = data.bookings.reduce((sum, booking) => sum + calculateBookingRevenue(booking), 0);
   const vehiclesTotal = data.vehicles.length || 1;
   const availableVehicles = data.vehicles.filter((vehicle) => vehicle.status === "available").length;
   const serviceVehicles = data.vehicles.filter((vehicle) => ["maintenance", "repair"].includes(vehicle.status)).length;
@@ -397,9 +408,16 @@ export function DashboardPage({ user, data, locale }: PageProps) {
               <a href={`/fleet/${vehicle.id}`}><strong>{vehicle.license_plate}</strong><small>{vehicle.make} {vehicle.model}</small></a>
               {calendarDays.map((day) => {
                 const booking = bookingForVehicleDay(vehicle, data.bookings, day);
-                const service = ["maintenance", "repair"].includes(vehicle.status);
+                const maintenance = maintenanceForVehicleDay(vehicle, data.maintenance, day);
+                const service = Boolean(maintenance) || ["maintenance", "repair"].includes(vehicle.status);
                 const cls = service ? "service" : booking ? (["confirmed", "paid_deposit", "reserved"].includes(booking.status) ? "reserved" : "rented") : vehicle.status === "reserved" ? "reserved" : "free";
-                const title = booking ? `${booking.booking_number}: ${booking.status}` : service ? vehicle.status : tx(locale, "Свободно", "Available");
+                const title = maintenance
+                  ? `${tx(locale, "Сервис", "Service")}: ${maintenance.type ?? maintenance.status}`
+                  : booking
+                    ? `${booking.booking_number}: ${booking.status}`
+                    : service
+                      ? vehicle.status
+                      : tx(locale, "Свободно", "Available");
                 return <span className={`calendar-cell ${cls}`} title={title} key={`${vehicle.id}-${day}`} />;
               })}
             </div>
@@ -511,6 +529,22 @@ export function DashboardPage({ user, data, locale }: PageProps) {
 export function FleetPage({ user, data, locale, selectedCategory = "all" }: PageProps & { selectedCategory?: "all" | VehicleCategory | "weak" | "rented" }) {
   const canManageFleet = user.role === "owner" || user.role === "manager" || user.role === "marketer";
   const canSeeStrategic = user.role === "owner" || user.role === "accountant";
+  const rentedStatuses = new Set(["handed_over", "active", "in_use", "returning"]);
+  const rentedVehicleIds = new Set(
+    data.bookings
+      .filter((booking) => rentedStatuses.has(String(booking.status ?? "")) || rentedStatuses.has(String(booking.rental_status ?? "")))
+      .map((booking) => booking.vehicle_id)
+      .filter(Boolean)
+  );
+  const isRentedVehicle = (vehicle: { id: string; status: string }) =>
+    rentedStatuses.has(String(vehicle.status ?? "")) || rentedVehicleIds.has(vehicle.id);
+  const activeServiceBlocksByVehicle = data.maintenance.reduce<Map<string, typeof data.maintenance>>((acc, item) => {
+    if (!item.vehicle_id || !["scheduled", "in_progress"].includes(String(item.status ?? ""))) return acc;
+    const current = acc.get(item.vehicle_id) ?? [];
+    current.push(item);
+    acc.set(item.vehicle_id, current);
+    return acc;
+  }, new Map());
   const categories: ["all" | VehicleCategory, string][] = [
     ["all", tr(locale, "all")],
     ["economy", tr(locale, "economy")],
@@ -525,11 +559,112 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
       : selectedCategory === "weak"
         ? data.vehicles.filter((vehicle) => vehicle.status_financial === "UNDERPERFORMING")
         : selectedCategory === "rented"
-          ? data.vehicles.filter((vehicle) => ["in_use", "handed_over", "active", "returning"].includes(vehicle.status))
+          ? data.vehicles.filter(isRentedVehicle)
           : data.vehicles.filter((vehicle) => vehicle.category === selectedCategory);
+  const publicVehicles = data.vehicles.filter((vehicle) => vehicle.public_visible);
+  const blockedPublicStatuses = new Set(["reserved", "handed_over", "in_use", "returning", "maintenance", "repair", "retired"]);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const catalogIssues = publicVehicles.flatMap((vehicle) => {
+    const issues: string[] = [];
+    const activePriceRules = (vehicle.price_rules ?? []).filter((rule) => rule.active && (rule.daily_rate_thb != null || rule.monthly_rate_thb != null));
+    const hasBasePrice = Number(vehicle.daily_rate_long_term ?? 0) > 0 || Number(vehicle.monthly_rate ?? 0) > 0 || activePriceRules.length > 0;
+    const hasPhotos = Array.isArray(vehicle.photos) && vehicle.photos.length > 0;
+    const hasRu = Boolean(String(vehicle.public_description_ru ?? "").trim());
+    const hasEn = Boolean(String(vehicle.public_description_en ?? "").trim());
+
+    if (!hasPhotos) issues.push(tx(locale, "нет фото", "no photos"));
+    if (!hasBasePrice) issues.push(tx(locale, "нет цены", "no price"));
+    if (Number(vehicle.deposit_amount ?? 0) <= 0) issues.push(tx(locale, "нет депозита", "no deposit"));
+    if (!hasRu) issues.push(tx(locale, "нет описания RU", "no RU description"));
+    if (!hasEn) issues.push(tx(locale, "нет описания EN", "no EN description"));
+    if (blockedPublicStatuses.has(vehicle.status)) issues.push(tx(locale, `статус ${vehicle.status}`, `status ${vehicle.status}`));
+
+    return issues.length
+      ? [{ vehicle, issues }]
+      : [];
+  });
+  const catalogReadyCount = publicVehicles.length - catalogIssues.length;
 
   return (
-    <PageFrame title={tr(locale, "fleetTitle")} subtitle="" locale={locale} activePath="/fleet" action={<a className="primary" href="/api/vehicles">API vehicles</a>}>
+    <PageFrame
+      title={tr(locale, "fleetTitle")}
+      subtitle=""
+      locale={locale}
+      activePath={selectedCategory === "rented" ? "/fleet?category=rented" : "/fleet"}
+      action={<a className="primary" href="/api/vehicles">API vehicles</a>}
+    >
+      {canManageFleet ? (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">{tx(locale, "Публичный каталог", "Public catalog")}</p>
+              <h2>{tx(locale, "Готовность машин к продажам", "Vehicle sales readiness")}</h2>
+              <p className="sub">
+                {tx(
+                  locale,
+                  "Проверяем только машины с включенным показом на сайте: фото, цены, депозит, описания и текущий статус. Занятые, ремонтные и списанные машины не должны уходить в публичный каталог без дат.",
+                  "Checks only vehicles shown on the website: photos, prices, deposit, descriptions, and current status. Busy, service, and retired vehicles should not go to the public catalog without dates."
+                )}
+              </p>
+            </div>
+            <span className={`badge ${catalogIssues.length ? "warn" : "ok"}`}>
+              {catalogIssues.length ? tx(locale, "Нужны правки", "Needs fixes") : tx(locale, "Готово", "Ready")}
+            </span>
+          </div>
+          <div className="kpi-grid">
+            <div className="kpi">
+              <span>{tx(locale, "Публично включено", "Public enabled")}</span>
+              <strong>{publicVehicles.length}</strong>
+            </div>
+            <div className="kpi">
+              <span>{tx(locale, "Готово к показу", "Ready to show")}</span>
+              <strong>{catalogReadyCount}</strong>
+            </div>
+            <div className="kpi">
+              <span>{tx(locale, "Нужно исправить", "Need fixes")}</span>
+              <strong>{catalogIssues.length}</strong>
+            </div>
+            <div className="kpi">
+              <span>{tx(locale, "API для сайта", "Website API")}</span>
+              <strong style={{ fontSize: "1rem" }}><a href="/api/tilda/vehicles">/api/tilda/vehicles</a></strong>
+            </div>
+          </div>
+          {catalogIssues.length ? (
+            <div className="table-wrap" style={{ marginTop: "14px" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>{tx(locale, "Машина", "Vehicle")}</th>
+                    <th>{tx(locale, "Статус", "Status")}</th>
+                    <th>{tx(locale, "Что исправить", "What to fix")}</th>
+                    <th>{tx(locale, "Действие", "Action")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {catalogIssues.slice(0, 12).map(({ vehicle, issues }) => (
+                    <tr key={vehicle.id}>
+                      <td>
+                        <strong>{vehicle.make} {vehicle.model}</strong>
+                        <br />
+                        <span className="muted">{vehicle.license_plate}</span>
+                      </td>
+                      <td>{vehicleStatusBadge(vehicle.status, locale)}</td>
+                      <td>{issues.join(", ")}</td>
+                      <td><a className="link-button" href={`/fleet/${vehicle.id}`}>{tx(locale, "Открыть карточку", "Open card")}</a></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {catalogIssues.length > 12 ? <p className="muted">{tx(locale, `Еще проблемных машин: ${catalogIssues.length - 12}`, `${catalogIssues.length - 12} more vehicles need fixes`)}</p> : null}
+            </div>
+          ) : (
+            <p className="muted" style={{ marginTop: "14px" }}>
+              {tx(locale, "Все публичные машины имеют базовые данные для продаж.", "All public vehicles have the baseline sales data.")}
+            </p>
+          )}
+        </section>
+      ) : null}
+
       <section className="panel">
         <div className="panel-head">
           <div>
@@ -545,7 +680,10 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
               return <a className={`chip ${selectedCategory === key ? "active" : ""}`} href={href} key={key}>{label}<b>{count}</b></a>;
             })}
             <a className={`chip ${selectedCategory === "rented" ? "active" : ""}`} href="/fleet?category=rented">
-              {tx(locale, "В аренде", "Rented")}<b>{data.vehicles.filter(v => ["in_use", "handed_over", "active", "returning"].includes(v.status)).length}</b>
+              {tx(locale, "В аренде", "Rented")}<b>{data.vehicles.filter(isRentedVehicle).length}</b>
+            </a>
+            <a className="chip" href="/maintenance">
+              {tx(locale, "Сервис", "Service")}<b>{activeServiceBlocksByVehicle.size}</b>
             </a>
             <a className={`chip ${selectedCategory === "weak" ? "active" : ""}`} href="/fleet?category=weak">
               {tr(locale, "weakAssets")}<b>{data.vehicles.filter((vehicle) => vehicle.status_financial === "UNDERPERFORMING").length}</b>
@@ -556,24 +694,37 @@ export function FleetPage({ user, data, locale, selectedCategory = "all" }: Page
           <table>
             <thead><tr><th>{tx(locale, "Фото", "Photo")}</th><th>{tr(locale, "vehicle")}</th><th>{tr(locale, "category")}</th><th>{tr(locale, "status")}</th><th>{tr(locale, "price")}</th>{canSeeStrategic ? <><th>RevPAD</th><th>Payback</th></> : null}</tr></thead>
             <tbody>
-              {visibleVehicles.map((vehicle) => (
-                <tr key={vehicle.id}>
-                  <td>
-                    <a href={`/fleet/${vehicle.id}`} className="fleet-thumb">
-                      {vehicle.photos[0] ? <img src={vehicle.photos[0]} alt={`${vehicle.make} ${vehicle.model}`} /> : <span>{tx(locale, "Нет фото", "No photo")}</span>}
-                    </a>
-                  </td>
-                  <td>
-                    <a href={`/fleet/${vehicle.id}`} className="fleet-car-title"><strong>{vehicle.make} {vehicle.model}</strong></a>
-                    <span className="fleet-plate">{vehicle.license_plate}</span>
-                    <span className="muted">{vehicle.location}</span>
-                  </td>
-                  <td>{categoryLabel(vehicle.category)}</td>
-                  <td>{vehicleStatusBadge(vehicle.status, locale)}</td>
-                  <td>{tr(locale, "fromRate30", { rate: vehicle.daily_rate_long_term })}</td>
-                  {canSeeStrategic ? <><td>{money(vehicle.revpad)}</td><td><span className="badge warn">{vehicle.payback_pct}%</span></td></> : null}
-                </tr>
-              ))}
+              {visibleVehicles.map((vehicle) => {
+                const serviceBlocks = (activeServiceBlocksByVehicle.get(vehicle.id) ?? [])
+                  .slice()
+                  .sort((left, right) => String(left.vehicle_unavailable_from ?? "").localeCompare(String(right.vehicle_unavailable_from ?? "")));
+                const nextServiceBlock = serviceBlocks[0];
+                const serviceStart = String(nextServiceBlock?.vehicle_unavailable_from ?? "").slice(0, 10);
+                const serviceEnd = String(nextServiceBlock?.vehicle_unavailable_to ?? "").slice(0, 10) || (nextServiceBlock ? tx(locale, "открыто", "open") : "");
+                return (
+                  <tr key={vehicle.id}>
+                    <td>
+                      <a href={`/fleet/${vehicle.id}`} className="fleet-thumb">
+                        {vehicle.photos[0] ? <img src={vehicle.photos[0]} alt={`${vehicle.make} ${vehicle.model}`} /> : <span>{tx(locale, "Нет фото", "No photo")}</span>}
+                      </a>
+                    </td>
+                    <td>
+                      <a href={`/fleet/${vehicle.id}`} className="fleet-car-title"><strong>{vehicle.make} {vehicle.model}</strong></a>
+                      <span className="fleet-plate">{vehicle.license_plate}</span>
+                      <span className="muted">{vehicle.location}</span>
+                      {nextServiceBlock ? (
+                        <span className="badge warn">
+                          {tx(locale, "Сервис", "Service")} {serviceStart} - {serviceEnd}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td>{categoryLabel(vehicle.category)}</td>
+                    <td>{vehicleStatusBadge(vehicle.status, locale)}</td>
+                    <td>{tr(locale, "fromRate30", { rate: vehicle.daily_rate_long_term })}</td>
+                    {canSeeStrategic ? <><td>{money(vehicle.revpad)}</td><td><span className="badge warn">{vehicle.payback_pct}%</span></td></> : null}
+                  </tr>
+                );
+              })}
               {visibleVehicles.length === 0 ? (
                 <tr>
                   <td colSpan={canSeeStrategic ? 7 : 5}>
@@ -661,9 +812,79 @@ export function CustomersPage({ user, data, locale }: PageProps) {
 export function LeadsPage({ user, data, locale }: PageProps) {
   const activeLeads = data.leads.filter((lead) => isActiveLeadStage(lead.stage)).length;
   const notLeads = data.leads.filter((lead) => lead.stage === "not_lead").length;
+  const nowIso = new Date().toISOString();
+  const leadActionQueue = data.leads
+    .filter((lead) => isActiveLeadStage(lead.stage))
+    .map((lead) => {
+      const hasContact = Boolean(lead.phone || lead.telegram_username || lead.contact_handle);
+      const hasNextAction = Boolean(String(lead.next_action ?? "").trim());
+      const hasReminder = Boolean(String(lead.reminder_at ?? "").trim());
+      const reminderOverdue = hasReminder && String(lead.reminder_at) <= nowIso;
+      const reason = !hasContact
+        ? tx(locale, "нет контакта", "missing contact")
+        : !hasNextAction
+          ? tx(locale, "нет следующего действия", "missing next action")
+          : !hasReminder
+            ? tx(locale, "нет reminder", "missing reminder")
+            : reminderOverdue
+              ? tx(locale, "reminder просрочен", "reminder overdue")
+              : "";
+      return { lead, reason, reminderOverdue };
+    })
+    .filter((item) => item.reason)
+    .sort((left, right) => {
+      if (left.reminderOverdue !== right.reminderOverdue) return left.reminderOverdue ? -1 : 1;
+      return right.lead.score - left.lead.score;
+    })
+    .slice(0, 20);
 
   return (
     <PageFrame title={tr(locale, "leadsTitle")} subtitle={tr(locale, "leadsSubtitle")} locale={locale} activePath="/leads">
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>{tx(locale, "Что обработать сейчас", "Work now")}</h2>
+            <p className="sub">
+              {tx(
+                locale,
+                "Лиды без контакта, следующего действия или reminder. Просроченные reminder идут первыми.",
+                "Leads missing contact, next action or reminder. Overdue reminders come first."
+              )}
+            </p>
+          </div>
+          <span className={leadActionQueue.length ? "badge warn" : "badge ok"}>{leadActionQueue.length}</span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{tr(locale, "lead")}</th>
+                <th>{tr(locale, "source")}</th>
+                <th>{tx(locale, "Причина", "Reason")}</th>
+                <th>{tx(locale, "Следующее действие", "Next action")}</th>
+                <th>Reminder</th>
+                <th>{tx(locale, "Действие", "Action")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leadActionQueue.map(({ lead, reason }) => (
+                <tr key={`lead-action-${lead.id}`}>
+                  <td><a href={`/leads/${lead.id}`}><strong>{lead.customer_name}</strong></a><br /><span className="muted">score {lead.score}</span></td>
+                  <td>{sourceLabel(lead.channel, locale)}</td>
+                  <td><span className="badge warn">{reason}</span></td>
+                  <td>{lead.next_action || "-"}</td>
+                  <td>{lead.reminder_at || "-"}</td>
+                  <td><a className="button" href={`/leads/${lead.id}`}>{tx(locale, "Работать", "Work")}</a></td>
+                </tr>
+              ))}
+              {leadActionQueue.length === 0 ? (
+                <tr><td colSpan={6}>{tx(locale, "Срочных лидов без следующего шага нет.", "No urgent leads without a next step.")}</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section className="filters">
         <span className="chip active">{tx(locale, "Лидогенерация", "Lead generation")} <b>{data.leads.filter((lead) => lead.stage === "new").length}</b></span>
         <span className="chip active">{tx(locale, "Продажа", "Sales")} <b>{activeLeads}</b></span>
@@ -705,26 +926,34 @@ export function LeadsPage({ user, data, locale }: PageProps) {
 }
 
 export function BookingsPage({ user, data, locale }: PageProps) {
-  // Calculate Phuket local today and tomorrow strings
   const getLocalDateStr = (offsetDays = 0) => {
     const d = new Date();
     d.setDate(d.getDate() + offsetDays);
     return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
   };
-  
   const todayStr = getLocalDateStr(0);
   const tomorrowStr = getLocalDateStr(1);
+  const rentalStatuses = new Set(["handed_over", "active", "in_use", "returning", "returned"]);
+  const bookingStatuses = new Set(["draft", "confirmed", "paid_deposit"]);
+  const visibleBookings = data.bookings.filter((booking) => {
+    const bookingStatus = String(booking.status ?? "");
+    const rentalStatus = String(booking.rental_status ?? "");
+    const bookingEnd = String(booking.actual_end ?? booking.end_date ?? "").slice(0, 10);
+    return (
+      bookingStatuses.has(bookingStatus) &&
+      !rentalStatuses.has(rentalStatus) &&
+      Boolean(!bookingEnd || bookingEnd >= todayStr)
+    );
+  });
 
-  const bookingsToday = data.bookings.filter(b => {
+  const bookingsToday = visibleBookings.filter(b => {
     if (!b.start_date || b.start_date.slice(0, 10) !== todayStr) return false;
-    if (!["confirmed", "paid_deposit", "draft"].includes(b.status)) return false;
     const vehicle = data.vehicles.find(v => v.id === b.vehicle_id);
     if (vehicle && vehicle.status === "in_use") return false;
     return true;
   });
-  const bookingsTomorrow = data.bookings.filter(b => {
+  const bookingsTomorrow = visibleBookings.filter(b => {
     if (!b.start_date || b.start_date.slice(0, 10) !== tomorrowStr) return false;
-    if (!["confirmed", "paid_deposit", "draft"].includes(b.status)) return false;
     const vehicle = data.vehicles.find(v => v.id === b.vehicle_id);
     if (vehicle && vehicle.status === "in_use") return false;
     return true;
@@ -812,7 +1041,10 @@ export function BookingsPage({ user, data, locale }: PageProps) {
         <div className="table-wrap">
           <table>
             <thead><tr><th>{tr(locale, "booking")}</th><th>{tr(locale, "customer")}</th><th>{tr(locale, "vehicle")}</th><th>{tr(locale, "dates")}</th><th>{tr(locale, "amount")}</th><th>{tr(locale, "status")}</th></tr></thead>
-            <tbody>{data.bookings.map((booking) => <tr key={booking.id}><td><a href={`/bookings/${booking.id}`}>{booking.booking_number}</a></td><td>{booking.customer_id ? <a href={`/customers/${booking.customer_id}`}>{booking.customer_name}</a> : booking.customer_name}</td><td>{booking.vehicle_id ? <a href={`/fleet/${booking.vehicle_id}`}>{booking.vehicle}</a> : booking.vehicle}</td><td>{booking.start_date} - {booking.end_date}</td><td>{money(booking.grand_total)}</td><td>{bookingStatusBadge(booking.status, locale)}</td></tr>)}</tbody>
+            <tbody>
+              {visibleBookings.map((booking) => <tr key={booking.id}><td><a href={`/bookings/${booking.id}`}>{booking.booking_number}</a></td><td>{booking.customer_id ? <a href={`/customers/${booking.customer_id}`}>{booking.customer_name}</a> : booking.customer_name}</td><td>{booking.vehicle_id ? <a href={`/fleet/${booking.vehicle_id}`}>{booking.vehicle}</a> : booking.vehicle}</td><td>{booking.start_date} - {booking.end_date}</td><td>{money(booking.grand_total)}</td><td>{bookingStatusBadge(booking.status, locale)}</td></tr>)}
+              {visibleBookings.length === 0 ? <tr><td colSpan={6}>{tr(locale, "createBookingFirst")}</td></tr> : null}
+            </tbody>
           </table>
         </div>
       </section>
@@ -825,6 +1057,8 @@ export function BookingsPage({ user, data, locale }: PageProps) {
             locale={locale}
             customers={data.customers}
             vehicles={data.vehicles}
+            existingBookings={data.bookings}
+            existingMaintenance={data.maintenance}
             defaultDailyRate={390}
             defaultMonthlyRate={11700}
             defaultDeposit={5000}
@@ -839,6 +1073,9 @@ export function BookingsPage({ user, data, locale }: PageProps) {
 export function HandoverPage({ user, data, locale }: PageProps) {
   const actionableBookings = data.bookings.filter((booking) => ["confirmed", "paid_deposit", "handed_over", "active", "returning"].includes(booking.status));
   const queuePriority: Record<string, number> = { returning: 0, confirmed: 1, paid_deposit: 2, active: 3, handed_over: 4 };
+  const liveRentalStatuses = new Set(["handed_over", "active", "in_use", "returning"]);
+  const isLiveRental = (booking: { status?: string; rental_status?: string }) =>
+    liveRentalStatuses.has(String(booking.status ?? "")) || liveRentalStatuses.has(String(booking.rental_status ?? ""));
   const sortedActionableBookings = [...actionableBookings].sort((left, right) => {
     const priorityDiff = (queuePriority[left.status] ?? 9) - (queuePriority[right.status] ?? 9);
     if (priorityDiff !== 0) return priorityDiff;
@@ -846,9 +1083,31 @@ export function HandoverPage({ user, data, locale }: PageProps) {
     const rightDate = ["confirmed", "paid_deposit"].includes(right.status) ? right.start_date : right.end_date;
     return leftDate.localeCompare(rightDate);
   });
-  const pickupQueue = sortedActionableBookings.filter((booking) => ["confirmed", "paid_deposit"].includes(booking.status));
-  const activeRentals = sortedActionableBookings.filter((booking) => ["handed_over", "active"].includes(booking.status));
-  const returnQueue = sortedActionableBookings.filter((booking) => booking.status === "returning" || booking.end_date <= dateKey(addDays(new Date(), 1)));
+  const pickupQueue = sortedActionableBookings.filter((booking) => ["confirmed", "paid_deposit"].includes(booking.status) && !isLiveRental(booking));
+  const activeRentals = sortedActionableBookings.filter(isLiveRental);
+  const returnQueue = sortedActionableBookings.filter((booking) =>
+    booking.status === "returning" ||
+    booking.rental_status === "returning" ||
+    (isLiveRental(booking) && booking.end_date <= dateKey(addDays(new Date(), 1)))
+  );
+  const today = dateKey(new Date());
+  const returnClosureQueue = data.bookings
+    .filter((booking) => {
+      const endedOrReturning =
+        booking.status === "returning" ||
+        booking.rental_status === "returning" ||
+        booking.rental_status === "returned" ||
+        booking.status === "completed" ||
+        (["handed_over", "active"].includes(booking.status) && booking.end_date <= today);
+      if (!endedOrReturning) return false;
+      const hasReturnPhotos = Array.isArray(booking.return_photos) && booking.return_photos.length > 0;
+      const depositNeedsAction =
+        Number(booking.deposit_amount ?? 0) > 0 &&
+        ["held", "partially_returned", "not_taken"].includes(String(booking.deposit_status ?? "not_taken"));
+      return !hasReturnPhotos || depositNeedsAction || booking.status === "returning" || booking.rental_status === "returning";
+    })
+    .sort((left, right) => left.end_date.localeCompare(right.end_date))
+    .slice(0, 25);
   const booking = sortedActionableBookings[0];
   return (
     <PageFrame title={tr(locale, "handoverTitle")} subtitle={tr(locale, "handoverSubtitle")} locale={locale} activePath="/handover">
@@ -867,6 +1126,59 @@ export function HandoverPage({ user, data, locale }: PageProps) {
           <div className="metric-label">{tx(locale, "Возвраты", "Returns")}</div>
           <div className="metric-value">{returnQueue.length}</div>
           <div className="muted">{tx(locale, "сегодня / завтра / returning", "today / tomorrow / returning")}</div>
+        </div>
+        <div className="card">
+          <div className="metric-label">{tx(locale, "Закрыть возврат", "Close returns")}</div>
+          <div className="metric-value">{returnClosureQueue.length}</div>
+          <div className="muted">{tx(locale, "фото / депозит / статус", "photos / deposit / status")}</div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>{tx(locale, "Контроль закрытия возвратов", "Return closure control")}</h2>
+            <p className="sub">
+              {tx(
+                locale,
+                "Эти брони нельзя оставлять висеть: проверьте фото возврата, депозит и финальный статус аренды.",
+                "Do not leave these bookings hanging: check return photos, deposit and final rental status."
+              )}
+            </p>
+          </div>
+          <span className={returnClosureQueue.length ? "badge warn" : "badge ok"}>{returnClosureQueue.length}</span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{tr(locale, "booking")}</th>
+                <th>{tr(locale, "customer")}</th>
+                <th>{tr(locale, "vehicle")}</th>
+                <th>{tx(locale, "Возврат", "Return")}</th>
+                <th>{tx(locale, "Фото", "Photos")}</th>
+                <th>{tx(locale, "Депозит", "Deposit")}</th>
+                <th>{tx(locale, "Действие", "Action")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {returnClosureQueue.map((item) => {
+                const hasReturnPhotos = Array.isArray(item.return_photos) && item.return_photos.length > 0;
+                return (
+                  <tr key={`return-close-${item.id}`}>
+                    <td><a href={`/bookings/${item.id}`}><strong>{item.booking_number}</strong></a><br /><span className="badge-row">{bookingStatusBadge(item.status, locale)}{rentalStatusBadge(item.rental_status, locale)}</span></td>
+                    <td>{item.customer_id ? <a href={`/customers/${item.customer_id}`}>{item.customer_name}</a> : item.customer_name}</td>
+                    <td>{item.vehicle_id ? <a href={`/fleet/${item.vehicle_id}`}>{item.vehicle}</a> : item.vehicle}</td>
+                    <td>{item.end_date}</td>
+                    <td><span className={hasReturnPhotos ? "badge ok" : "badge danger"}>{hasReturnPhotos ? tx(locale, "есть", "ok") : tx(locale, "нет", "missing")}</span></td>
+                    <td><span className={["fully_returned", "forfeited"].includes(String(item.deposit_status ?? "")) ? "badge ok" : "badge warn"}>{item.deposit_status ?? "not_taken"}</span><br /><span className="muted">{money(item.deposit_amount)}</span></td>
+                    <td><a className="button" href={`/bookings/${item.id}`}>{tx(locale, "Закрыть", "Close")}</a></td>
+                  </tr>
+                );
+              })}
+              {returnClosureQueue.length === 0 ? <tr><td colSpan={7}>{tx(locale, "Хвостов по возвратам нет.", "No return closure tails.")}</td></tr> : null}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -934,6 +1246,7 @@ export function HandoverPage({ user, data, locale }: PageProps) {
                   ["handover-media", "car_photos", tx(locale, "Фото авто / повреждения", "Car / damage photos"), ""],
                   ["customer-documents", "driver_license", tx(locale, "Фото прав клиента", "Customer license photo"), ""],
                   ["customer-documents", "passport", tx(locale, "Фото паспорта клиента", "Customer passport photo"), ""],
+                  ["return-media", "return_photos", tx(locale, "Фото возврата", "Return photos"), ""],
                   ["return-media", "return_video", tx(locale, "Видео возврата", "Return video"), "video"]
                 ].map(([bucket, field, label, type]) => (
                   <BookingMediaUploadForm

@@ -4,6 +4,8 @@ export const leadStages: LeadStage[] = ["new", "contacted", "qualified", "quoted
 
 export const activeLeadStages: LeadStage[] = ["new", "contacted", "qualified", "quoted", "negotiating"];
 
+export const pipelineLeadStages: LeadStage[] = ["new", "contacted", "qualified", "quoted", "negotiating", "booked", "lost"];
+
 export const leadStageMeta: Record<LeadStage, { ru: string; en: string; descRu: string; descEn: string; zoneRu: string; zoneEn: string; actionsRu: string[]; actionsEn: string[] }> = {
   new: {
     ru: "Новый лид",

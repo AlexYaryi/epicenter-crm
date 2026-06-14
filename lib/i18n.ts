@@ -1,10 +1,9 @@
-import { cookies } from "next/headers";
-
 export type Locale = "ru" | "en";
 
 export const localeCookieName = "epicenter_locale";
 
 export async function getLocale(): Promise<Locale> {
+  const { cookies } = await import("next/headers");
   const store = await cookies();
   return store.get(localeCookieName)?.value === "en" ? "en" : "ru";
 }
@@ -12,7 +11,9 @@ export async function getLocale(): Promise<Locale> {
 const dict = {
   ru: {
     navHome: "Главная",
+    navLaunch: "Запуск",
     navFleet: "Автопарк",
+    navRented: "В аренде",
     navCustomers: "Клиенты",
     navLeads: "Лиды",
     navBookings: "Брони",
@@ -24,6 +25,7 @@ const dict = {
     navFinance: "Финансы / ROI",
     navAnalytics: "Аналитика",
     navSettings: "Настройки",
+    navUsers: "Пользователи",
     carRentalCrm: "CRM автопроката",
     role: "Роль",
     authActive: "Supabase Auth активен",
@@ -57,6 +59,7 @@ const dict = {
     suv: "SUV",
     pickup: "Пикап",
     convertible: "Кабриолет",
+    "7seater": "7-местные",
     weakAssets: "Слабые активы",
     vehicle: "Машина",
     category: "Категория",
@@ -76,7 +79,7 @@ const dict = {
     saveCustomer: "Сохранить клиента",
     passportNameMissing: "Имя по паспорту не заполнено",
     valid: "valid",
-    idpNeeded: "нужен IDP",
+    idpNeeded: "нужны IDP / тайские права",
     leadsTitle: "Лиды",
     leadsSubtitle: "Воронка продаж, категории клиента и напоминания по следующему действию.",
     nextStatus: "Следующий статус",
@@ -105,7 +108,7 @@ const dict = {
     deliveryPickup: "Доставка / забор",
     total: "Итого",
     handoverTitle: "Выдача / возврат",
-    handoverSubtitle: "Mobile-first чек-лист: видеофиксация, фото авто, права, паспорт и платежи.",
+    handoverSubtitle: "Mobile-first чек-лист: видеофиксация, фото авто, IDP / тайские права, паспорт и платежи.",
     paymentByBooking: "Оплата по броне",
     pickupFee: "Забор",
     deliveryFee: "Доставка",
@@ -140,7 +143,7 @@ const dict = {
     maintenanceSubtitle: "Плановые работы, аварийные ремонты, downtime и расходы, влияющие на ROI.",
     maintenanceQueue: "Очередь ТО",
     documentsTitle: "Документы",
-    documentsSubtitle: "Паспорта, права, IDP, договоры, полисы, tax invoices и CAPEX invoices.",
+    documentsSubtitle: "Паспорта, права, IDP / тайские права, договоры, полисы, tax invoices и CAPEX invoices.",
     financeTitle: "Финансы / ROI",
     financeSubtitle: "Стратегический модуль для owner/accountant: payback, RevPAD, ROI и рекомендации.",
     analyticsTitle: "Аналитика",
@@ -153,7 +156,9 @@ const dict = {
   },
   en: {
     navHome: "Dashboard",
+    navLaunch: "Launch",
     navFleet: "Fleet",
+    navRented: "In rental",
     navCustomers: "Customers",
     navLeads: "Leads",
     navBookings: "Bookings",
@@ -165,6 +170,7 @@ const dict = {
     navFinance: "Finance / ROI",
     navAnalytics: "Analytics",
     navSettings: "Settings",
+    navUsers: "Users",
     carRentalCrm: "Car rental CRM",
     role: "Role",
     authActive: "Supabase Auth active",
@@ -198,6 +204,7 @@ const dict = {
     suv: "SUV",
     pickup: "Pickup",
     convertible: "Convertible",
+    "7seater": "7-seater",
     weakAssets: "Weak assets",
     vehicle: "Vehicle",
     category: "Category",
@@ -217,7 +224,7 @@ const dict = {
     saveCustomer: "Save customer",
     passportNameMissing: "Passport name is missing",
     valid: "valid",
-    idpNeeded: "IDP required",
+    idpNeeded: "IDP / Thai license required",
     leadsTitle: "Leads",
     leadsSubtitle: "Sales pipeline, customer category and next-action reminders.",
     nextStatus: "Next status",
@@ -246,7 +253,7 @@ const dict = {
     deliveryPickup: "Delivery / pickup",
     total: "Total",
     handoverTitle: "Handover / return",
-    handoverSubtitle: "Mobile-first checklist: vehicle video, car photos, license, passport and payments.",
+    handoverSubtitle: "Mobile-first checklist: vehicle video, car photos, IDP / Thai license, passport and payments.",
     paymentByBooking: "Booking payment",
     pickupFee: "Pickup",
     deliveryFee: "Delivery",
@@ -281,7 +288,7 @@ const dict = {
     maintenanceSubtitle: "Scheduled service, emergency repairs, downtime and costs that affect ROI.",
     maintenanceQueue: "Maintenance queue",
     documentsTitle: "Documents",
-    documentsSubtitle: "Passports, licenses, IDP, contracts, policies, tax invoices and CAPEX invoices.",
+    documentsSubtitle: "Passports, licenses, IDP / Thai licenses, contracts, policies, tax invoices and CAPEX invoices.",
     financeTitle: "Finance / ROI",
     financeSubtitle: "Strategic module for owner/accountant: payback, RevPAD, ROI and recommendations.",
     analyticsTitle: "Analytics",
@@ -304,4 +311,32 @@ export function tr(locale: Locale, key: I18nKey, vars?: Record<string, string | 
     }
   }
   return value;
+}
+
+export function formatDisplayDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return "-";
+  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const [, year, month, day] = match;
+    return `${day}.${month}.${year}`;
+  }
+  return dateStr;
+}
+
+export function formatDisplayDateTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return "-";
+  // Check if dateStr contains time information (T or space)
+  const hasTime = dateStr.includes("T") || (dateStr.includes(" ") && dateStr.split(" ")[1]?.trim().length >= 5);
+  if (!hasTime) return formatDisplayDate(dateStr);
+  
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return dateStr;
+  
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = date.getFullYear();
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  
+  return `${day}.${month}.${year} в ${hours}:${minutes}`;
 }
